@@ -6,10 +6,6 @@ from horiba_sdk.core.acquisition_format import AcquisitionFormat
 from horiba_sdk.core.x_axis_conversion_type import XAxisConversionType
 
 class HoribaController:
-    """
-    Async wrapper around the Horiba EZSpec SDK DeviceManager, Monochromator, and CCD,
-    providing methods for configuration and spectrum acquisition.
-    """
     def __init__(self,
                  start_icl: bool = True,
                  icl_ip: str = '127.0.0.1',
@@ -86,6 +82,10 @@ class HoribaController:
                                   position: Monochromator.MirrorPosition) -> None:
         await self.mono.set_mirror_position(mirror, position)
         await self._wait_for_mono()
+
+    async def get_available_gains(self) -> dict[int, str]:
+        cfg = await self.ccd.get_configuration()
+        return {g['token']: g['info'] for g in cfg['gains']}
 
     async def set_gain(self, gain: int) -> None:
         await self.ccd.set_gain(gain)

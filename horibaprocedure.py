@@ -1,7 +1,7 @@
 import numpy as np
 import asyncio
-from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter
-from horibacontroller import HoribaController, Monochromator
+from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter
+from horibacontroller import HoribaController
 
 class HoribaSpectrumProcedure(Procedure):
     start_wavelength = FloatParameter("Start Wavelength (nm)", default=300)
@@ -11,6 +11,7 @@ class HoribaSpectrumProcedure(Procedure):
     grating          = IntegerParameter("Grating",          default=1)
     slit_position    = FloatParameter("Slit (mm)",          default=0.5)
     mirror_position  = IntegerParameter("Mirror Pos",       default=1)
+    ' gain             = ListParameter("Gain", gain_labels, default=gain_labels[0])'
     gain             = IntegerParameter("Gain",             default=0)
     speed            = IntegerParameter("Speed",            default=2)
 
@@ -20,6 +21,15 @@ class HoribaSpectrumProcedure(Procedure):
         self.controller = HoribaController()
         asyncio.run(self.controller.initialize())
         self.aborted = False
+        
+        '''try:
+            controller = HoribaController()
+            gains_dict = asyncio.run(controller.get_available_gains())
+        except Exception as e:
+            print(f"failed to get gains: {e}")
+            gains_dict = {}
+
+        gain_labels = list(gains_dict.values())'''
 
     def execute(self):
         asyncio.run(self._run_scan())
@@ -29,7 +39,7 @@ class HoribaSpectrumProcedure(Procedure):
         await self.controller.set_slit_position(self.slit_position)
         await self.controller.set_mirror_position(self.mirror_position,
                                                    Monochromator.MirrorPosition.AXIAL)
-        await self.controller.set_gain(self.gain)
+        await self.controller.set_gain(gain_token)
         await self.controller.set_speed(self.speed)
 
         wavelengths = np.arange(self.start_wavelength,
@@ -38,7 +48,7 @@ class HoribaSpectrumProcedure(Procedure):
         for wl in wavelengths:
             if self.aborted:
                 break
-            wavenumber = 1e7 / wl
+            wavenumber = 1 / wl
             await self.controller.set_target_wavelength(wl)
             x, y = await self.controller.acquire_spectrum(self.exposure)
             for xi, yi in zip(x, y):
