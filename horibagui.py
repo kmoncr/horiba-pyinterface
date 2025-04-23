@@ -20,7 +20,7 @@ class MainWindow(ManagedWindow):
                 "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
-            x_axis="Wavelength",
+            x_axis="Wavenumber",
             y_axis="Intensity"
         )
         self.setWindowTitle("horiba spectrum scan")

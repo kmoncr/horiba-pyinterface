@@ -15,7 +15,7 @@ class HoribaSpectrumProcedure(Procedure):
     gain             = IntegerParameter("Gain",             default=0)
     speed            = IntegerParameter("Speed",            default=2)
 
-    DATA_COLUMNS = ["Wavelength", "Intensity"]
+    DATA_COLUMNS = ["Wavenumber", "Intensity"]
 
     '''def startup(self):
         self.controller = HoribaController()
@@ -39,6 +39,6 @@ class HoribaSpectrumProcedure(Procedure):
         for i in range(len(y_data)):
             for x, y in zip(x_data, y_data[i]):
                 self.emit("results", {
-                    "Wavelength": x,
+                    "Wavenumber": 1/x,
                     "Intensity": y
                 })
