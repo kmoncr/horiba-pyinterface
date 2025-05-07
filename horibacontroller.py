@@ -89,14 +89,10 @@ class HoribaController:
         await self._wait_for_ccd()
         
         raw = await self.ccd.get_acquisition_data()
-        x = raw[0]['roi'][0]['xData']
-        y = raw[0]['roi'][0]['yData']
         print("spectrum acquired")
         x_data = raw[0]['roi'][0]['xData']
         y_data = raw[0]['roi'][0]['yData']
         await self.shutdown()
-
-        await self._dm.stop()
 
         return x_data, y_data'''
         

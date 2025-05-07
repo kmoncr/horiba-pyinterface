@@ -4,6 +4,7 @@ from pymeasure.display.Qt import QtWidgets
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure
 from horibacontroller import HoribaController
+from pymeasure.experiment import Results
 
 class MainWindow(ManagedWindow):
     def __init__(self):
@@ -19,14 +20,22 @@ class MainWindow(ManagedWindow):
                 "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
-            x_axis="Wavenumber (cm^-1)",
+            x_axis="Wavenumber",
             y_axis="Intensity"
         )
         self.setWindowTitle("horiba spectrum scan")
 
     def make_filename(self):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"spectrum_data_{ts}.csv"
+        filename = f"spectrum_data_{ts}.csv"
+        return filename
+    
+    def queue(self):
+        procedure = HoribaSpectrumProcedure()
+        filename = self.make_filename()
+        results = Results(procedure, filename)
+        experiment = self.new_experiment(results)
+        self.manager.queue(experiment)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication([])

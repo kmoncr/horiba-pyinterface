@@ -1,6 +1,6 @@
 import numpy as np
 import asyncio
-from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter
+from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter
 from horibacontroller import HoribaController
 
 class HoribaSpectrumProcedure(Procedure):
@@ -15,18 +15,16 @@ class HoribaSpectrumProcedure(Procedure):
     gain             = IntegerParameter("Gain",             default=0)
     speed            = IntegerParameter("Speed",            default=2)
 
-    DATA_COLUMNS = ["Wavenumber (cm^-1)", "Intensity"]
+    DATA_COLUMNS = ["Wavenumber", "Intensity"]
 
     def execute(self):
         self.controller = HoribaController()
         asyncio.run(self.controller.initialize())
         x_data, y_data = self.controller.acquire_spectrum()
         
-        for i in x_data:
-            for x, y in zip(x_data[i], y_data[i]):
-                wavenumber = 1e7 / x 
+        for i in range(len(y_data)):
+            for x, y in zip(x_data, y_data[i]):
                 self.emit("results", {
-                    "Index": i,
-                    "Wavenumber": wavenumber,
+                    "Wavenumber": 1/x,
                     "Intensity": y
                 })
