@@ -17,29 +17,16 @@ class HoribaSpectrumProcedure(Procedure):
 
     DATA_COLUMNS = ["Wavenumber (cm^-1)", "Intensity"]
 
-    '''def startup(self):
-        self.controller = HoribaController()
-        asyncio.run(self.controller.initialize())
-        print("startup complete")
-        '''
-        
-    '''try:
-            controller = HoribaController()
-            gains_dict = asyncio.run(controller.get_available_gains())
-        except Exception as e:
-            print(f"failed to get gains: {e}")
-            gains_dict = {}
-
-        gain_labels = list(gains_dict.values())'''
-
     def execute(self):
         self.controller = HoribaController()
-        x_data, y_data = asyncio.run(self.controller.initialize())
+        asyncio.run(self.controller.initialize())
+        x_data, y_data = self.controller.acquire_spectrum()
         
         for i in x_data:
             for x, y in zip(x_data[i], y_data[i]):
+                wavenumber = 1e7 / x 
                 self.emit("results", {
                     "Index": i,
-                    "Wavelength": x,
+                    "Wavenumber": wavenumber,
                     "Intensity": y
                 })
