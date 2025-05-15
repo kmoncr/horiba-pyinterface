@@ -11,12 +11,11 @@ class MainWindow(ManagedWindow):
         super().__init__(
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
-                "start_wavelength", "end_wavelength", "step_size",
-                "exposure", "grating", "slit_position",
+                "center_wavelength", "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
             displays=[
-                "start_wavelength", "end_wavelength", "step_size",
+                "center_wavelength",
                 "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],

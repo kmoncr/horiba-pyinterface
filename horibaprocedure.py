@@ -4,14 +4,13 @@ from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter
 from horibacontroller import HoribaController
 
 class HoribaSpectrumProcedure(Procedure):
-    start_wavelength = FloatParameter("Start Wavelength (nm)", default=300)
-    end_wavelength   = FloatParameter("End Wavelength (nm)", default=800)
-    step_size        = FloatParameter("Step Size (nm)",    default=1)
-    exposure         = IntegerParameter("Exposure (ms)",    default=500)
-    grating          = IntegerParameter("Grating",          default=1)
-    slit_position    = FloatParameter("Slit (mm)",          default=0.5)
-    mirror_position  = IntegerParameter("Mirror Pos",       default=1)
-    ' gain             = ListParameter("Gain", gain_labels, default=gain_labels[0])'
+    center_wavelength = FloatParameter("Center Wavelength (nm)", default=780)
+    exposure         = IntegerParameter("Exposure (ms)",    default=1000)
+    grating          = IntegerParameter("Grating",          default=3)
+    slit             = IntegerParameter("Slit", default = 1)
+    slit_position    = FloatParameter("Slit position(mm)",          default=0.1)
+    mirror = IntegerParameter("Mirror", default = 1)
+    mirror_position  = IntegerParameter("Mirror position",       default=0)
     gain             = IntegerParameter("Gain",             default=0)
     speed            = IntegerParameter("Speed",            default=2)
 
