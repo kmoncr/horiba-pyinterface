@@ -47,7 +47,7 @@ class HoribaController:
         logger.debug("ccd opened")
 
         await self.mono.initialize()
-        logger.debug("mono initialized")
+        logger.debug("mono initialized")    
         await self._wait_for_mono()
         await self.mono.set_turret_grating(Monochromator.Grating.THIRD)
         logger.debug("grating set")
@@ -81,7 +81,7 @@ class HoribaController:
         await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
         logger.debug("ccd settings complete")
 
-        ''' ready = await self.ccd.get_acquisition_ready()
+        ready = await self.ccd.get_acquisition_ready()
         if not ready:
             raise RuntimeError("ccd not ready for acquisition")
         await self.ccd.acquisition_start(open_shutter=True)
@@ -94,10 +94,13 @@ class HoribaController:
         y_data = raw[0]['roi'][0]['yData']
         await self.shutdown()
 
-        return x_data, y_data'''
+        return x_data, y_data
         
     async def acquire_spectrum(self) -> dict[Any, Any]:
         logger.info("starting acquisition")
+        await self.ccd.open()
+        await self._wait_for_ccd()
+        logger.debug("ccd opened")
         ready = await self.ccd.get_acquisition_ready()
         if not ready:
             logger.critical("ccd not ready for acquisition")
@@ -122,6 +125,7 @@ class HoribaController:
         while busy:
             busy = await self.mono.is_busy()
             await asyncio.sleep(0.1)
+            logger.info('Mono busy...')
 
     async def _wait_for_ccd(self) -> None:
         if self.ccd is None:
@@ -130,6 +134,7 @@ class HoribaController:
         while busy:
             busy = await self.ccd.get_acquisition_busy()
             await asyncio.sleep(0.1)
+            logger.info('Acquisition busy')
 
     async def set_grating(self, grating: Monochromator.Grating) -> None:
         logger.debug("setting grating: {}", grating)

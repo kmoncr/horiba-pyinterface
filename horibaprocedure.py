@@ -19,8 +19,7 @@ class HoribaSpectrumProcedure(Procedure):
 
     def execute(self):
         self.controller = HoribaController()
-        asyncio.run(self.controller.initialize())
-        x_data, y_data = self.controller.acquire_spectrum()
+        x_data, y_data = asyncio.run(self.controller.initialize())
         
         for i in range(len(y_data)):
             for x, y in zip(x_data, y_data[i]):
