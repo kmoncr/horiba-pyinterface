@@ -28,7 +28,17 @@ class HoribaController:
         self.mono: Monochromator | None = None
         self.ccd: ChargeCoupledDevice | None = None
 
-    async def initialize(self): 
+    async def initialize(self, **kwargs):
+        center_wavelength = kwargs.get('center_wavelength', 780) 
+        exposure = kwargs.get('exposure', 1000)
+        grating = kwargs.get('grating', 3)
+        slit = kwargs.get('slit', 1)
+        slit_position = kwargs.get('slit_position', 0.1)
+        mirror = kwargs.get('mirror', 1)
+        mirror_position = kwargs.get('mirror_position', 0)
+        gain = kwargs.get('gain', 0)
+        speed = kwargs.get('speed', 2)
+
         logger.info("initializing")
         await self._dm.start()
         monos = self._dm.monochromators
@@ -53,10 +63,10 @@ class HoribaController:
         logger.debug("grating set")
         await self._wait_for_mono()
 
-        await self.mono.move_to_target_wavelength(780)
+        await self.mono.move_to_target_wavelength(center_wavelength)
         logger.debug("mono moved to target wavelength")
         await self._wait_for_mono()
-        await self.mono.set_slit_position(self.mono.Slit.A, 0.1)    
+        await self.mono.set_slit_position(self.mono.Slit.A, slit_position)    
         logger.debug("slit position of grating set")
         await self.mono.set_mirror_position(self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL)
         logger.debug("mirror position set")
@@ -72,9 +82,9 @@ class HoribaController:
         
         await self.ccd.set_acquisition_count(1)
         await self.ccd.set_center_wavelength(self.mono.id(), 780)           
-        await self.ccd.set_exposure_time(1000)
-        await self.ccd.set_gain(0) 
-        await self.ccd.set_speed(2)            
+        await self.ccd.set_exposure_time(exposure)
+        await self.ccd.set_gain(gain) 
+        await self.ccd.set_speed(speed)            
         await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
         await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
         await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)

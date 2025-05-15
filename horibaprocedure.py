@@ -16,9 +16,22 @@ class HoribaSpectrumProcedure(Procedure):
 
     DATA_COLUMNS = ["Wavenumber", "Intensity"]
 
+
     def execute(self):
+        params = {
+        'center_wavelength': self.center_wavelength,
+        'exposure': self.exposure,
+        'grating': self.grating,
+        'slit': self.slit,
+        'slit_position': self.slit_position,
+        'mirror': self.mirror,
+        'mirror_position': self.mirror_position,
+        'gain': self.gain,
+        'speed': self.speed,
+    }
+        
         self.controller = HoribaController()
-        x_data, y_data = asyncio.run(self.controller.initialize())
+        x_data, y_data = asyncio.run(self.controller.initialize(**params))
         
         for i in range(len(y_data)):
             for x, y in zip(x_data, y_data[i]):
