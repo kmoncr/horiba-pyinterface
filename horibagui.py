@@ -10,15 +10,16 @@ class MainWindow(ManagedWindow):
         super().__init__(
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
-                "center_wavelength", "exposure", "grating", "slit_position",
+                "excitation_wavelength", "center_wavelength", "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
             displays=[
+                "excitation_wavelength",
                 "center_wavelength",
                 "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
-            x_axis="Wavenumber",
+            x_axis="Wavelength",
             y_axis="Intensity"
         )
         self.setWindowTitle("horiba spectrum scan")
