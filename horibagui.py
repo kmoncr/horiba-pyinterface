@@ -3,7 +3,6 @@ import sys
 from pymeasure.display.Qt import QtWidgets
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure
-from horibacontroller import HoribaController
 from pymeasure.experiment import Results
 
 class MainWindow(ManagedWindow):
@@ -11,12 +10,11 @@ class MainWindow(ManagedWindow):
         super().__init__(
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
-                "start_wavelength", "end_wavelength", "step_size",
-                "exposure", "grating", "slit_position",
+                "center_wavelength", "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
             displays=[
-                "start_wavelength", "end_wavelength", "step_size",
+                "center_wavelength",
                 "exposure", "grating", "slit_position",
                 "mirror_position", "gain", "speed"
             ],
@@ -31,7 +29,7 @@ class MainWindow(ManagedWindow):
         return filename
     
     def queue(self):
-        procedure = HoribaSpectrumProcedure()
+        procedure = self.make_procedure()
         filename = self.make_filename()
         results = Results(procedure, filename)
         experiment = self.new_experiment(results)
