@@ -1,19 +1,78 @@
-import numpy as np
 import asyncio
 from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter
 from horibacontroller import HoribaController
+from enum import Enum
+
+class GratingEnum(Enum):
+    FIRST = "Monochromator.Grating.FIRST"
+    SECOND = "Monochromator.Grating.SECOND"
+    THIRD = "Monochromator.Grating.THIRD"
+    
+GRATING_CHOICES = {
+    'First (1800)': GratingEnum.FIRST,
+    'Second (600)': GratingEnum.SECOND,
+    'Third (150)':GratingEnum.THIRD,
+}
+
+class Gain(Enum):
+    FIRST = 0
+    SECOND = 1
+    THIRD = 2
+    FOURTH = 3
+
+GAIN_CHOICES = {
+    'Ultimate Sensitivity': Gain.FIRST,
+    'High Sensitivity': Gain.SECOND, 
+    'Best Dynamic Range': Gain.THIRD, 
+    'High Light': Gain.FOURTH
+}
+
+class Speed(Enum):
+    FIRST = 0
+    SECOND = 1
+    THIRD = 2
+
+SPEED_CHOICES = {
+    '50 kHz': Speed.FIRST, 
+    '1 mHz': Speed.SECOND, 
+    '3 mHz': Speed.THIRD
+}
+
+PARAM_MAP = {
+    # 'grating': GRATING_CHOICES,
+    'gain': GAIN_CHOICES,
+    'speed': SPEED_CHOICES
+}
 
 class HoribaSpectrumProcedure(Procedure):
+    def enumconv(self, param_name:str, value: str):
+        if param_name == 'grating':
+            if value in GRATING_CHOICES:
+                return GRATING_CHOICES[value]
+            else:
+                print(f"Error: Grating choice '{value}' not found.")
+                return None
+        enum_dict = PARAM_MAP.get(param_name)
+
+        if value in enum_dict:
+            enum_value = enum_dict[value]
+            return enum_value.value
+        else: 
+            print(f"Error: Value '{value}' not found in {param_name} choices.")
+            return None
+        
+
     excitation_wavelength = FloatParameter("Excitation Wavelength", units = 'nm', default = 532 )
     center_wavelength = FloatParameter("Center Wavelength", units = 'nm', default=780)
     exposure         = IntegerParameter("Exposure", units = 'ms', default=1000)
-    grating          = IntegerParameter("Grating",          default=3)
+    grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150)')
     # slit             = IntegerParameter("Slit", default = 1) //hardcoded slit, mirror selections
     slit_position    = FloatParameter("Slit position",  units = 'mm',        default=0.1)
     # mirror = IntegerParameter("Mirror", default = 1)
     mirror_position  = IntegerParameter("Mirror position",       default=0)
-    gain             = IntegerParameter("Gain",              default=0) # list: ultimate sensititvity, high sensitivity, best dynamic range, high light
-    speed            = IntegerParameter("Speed",            default=2) #list: 50khz, 1mhz, 3mhz
+    gain = ListParameter("Gain", choices=['Ultimate Sensitivity', 'High Sensitivity', 'Best Dynamic Range', 'High Light'], default='High Light')
+    #speed            = IntegerParameter("Speed",            default=2) #list: 50khz, 1mhz, 3mhz
+    speed = ListParameter("Speed", choices=['50 kHz', '1 mHz', '3 mHz'])
 
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
 
@@ -21,13 +80,13 @@ class HoribaSpectrumProcedure(Procedure):
         params = {
         'center_wavelength': self.center_wavelength,
         'exposure': self.exposure,
-        'grating': self.grating,
+        'grating': self.enumconv('grating', self.grating),
         #'slit': self.slit,
         'slit_position': self.slit_position,
         #'mirror': self.mirror,
         'mirror_position': self.mirror_position,
-        'gain': self.gain,
-        'speed': self.speed,
+        'gain': self.enumconv('gain', self.gain),
+        'speed': self.enumconv('speed', self.speed),
     }
         
         self.controller = HoribaController()

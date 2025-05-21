@@ -31,13 +31,16 @@ class HoribaController:
     async def initialize(self, **kwargs):
         center_wavelength = kwargs.get('center_wavelength', 780) 
         exposure = kwargs.get('exposure', 1000)
-        grating = kwargs.get('grating', 3)
+        grating = kwargs.get('grating', "Monochromator.Grating.THIRD") 
+        logger.debug("grating:", grating)
         #slit = kwargs.get('slit', 1) # slit will always be default value (slit A)
         slit_position = kwargs.get('slit_position', 0.1)
         #mirror = kwargs.get('mirror', 1) #always default (axial mirror)
         mirror_position = kwargs.get('mirror_position', 0)
         gain = kwargs.get('gain', 0)
+        logger.debug("Gain:", gain)
         speed = kwargs.get('speed', 2)
+        logger.debug("Speed: ", speed)
 
         logger.info("initializing")
         await self._dm.start()
@@ -59,7 +62,7 @@ class HoribaController:
         await self.mono.initialize()
         logger.debug("mono initialized")    
         await self._wait_for_mono()
-        await self.mono.set_turret_grating(Monochromator.Grating.THIRD)
+        await self.mono.set_turret_grating(grating)
         logger.debug("grating set")
         await self._wait_for_mono()
 
