@@ -27,109 +27,127 @@ class HoribaController:
             logger.remove()
         self.mono: Monochromator | None = None
         self.ccd: ChargeCoupledDevice | None = None
+        self.prev_center_wavelength = None
+        self.prev_exposure = None
+        self.prev_grating = None
+        self.prev_slit_position = None
+        self.prev_gain = None
+        self.prev_speed = None
 
     async def initialize(self, **kwargs):
         center_wavelength = kwargs.get('center_wavelength', 780) 
         exposure = kwargs.get('exposure', 1000)
         grating = kwargs.get('grating', "Monochromator.Grating.THIRD") 
-        logger.debug("grating:", grating)
-        #slit = kwargs.get('slit', 1) # slit will always be default value (slit A)
         slit_position = kwargs.get('slit_position', 0.1)
-        #mirror = kwargs.get('mirror', 1) #always default (axial mirror)
-        mirror_position = kwargs.get('mirror_position', 0)
         gain = kwargs.get('gain', 0)
-        logger.debug("Gain:", gain)
         speed = kwargs.get('speed', 2)
-        logger.debug("Speed: ", speed)
 
-        logger.info("initializing")
-        await self._dm.start()
-        monos = self._dm.monochromators
-        ccds  = self._dm.charge_coupled_devices
-        if not monos or not ccds:
-            logger.critical("no monochromator or ccd found")
-            raise RuntimeError("no mono or ccd found")
+        if (center_wavelength != self.prev_center_wavelength or 
+            exposure != self.prev_exposure or
+            grating != self.prev_grating or
+            slit_position != self.prev_slit_position or
+            gain != self.prev_gain or
+            speed != self.prev_speed):
         
-        self.mono = monos[0]
-        await self.mono.open()
-        await self._wait_for_mono()
-       
-        self.ccd  = ccds[0]
-        await self.ccd.open()
-        await self._wait_for_ccd()
-        logger.debug("ccd opened")
+            try:
+                logger.info("initializing")
+                await self._dm.start()
+                monos = self._dm.monochromators
+                ccds  = self._dm.charge_coupled_devices
+                if not monos or not ccds:
+                    logger.critical("no monochromator or ccd found")
+                    raise RuntimeError("no mono or ccd found")
+        
+                self.mono = monos[0]
+                if not await self.mono.is_open():
+                    await self.mono.open()
+                    await self._wait_for_mono()
 
-        await self.mono.initialize()
-        logger.debug("mono initialized")    
-        await self._wait_for_mono()
-        await self.mono.set_turret_grating(grating)
-        logger.debug("grating set")
-        await self._wait_for_mono()
+                self.ccd  = ccds[0]
+                if not await self.ccd.is_open():
+                    await self.ccd.open()
+                    await self._wait_for_ccd()
+                    logger.debug("ccd opened")
 
-        await self.mono.move_to_target_wavelength(center_wavelength)
-        logger.debug("mono moved to target wavelength")
-        await self._wait_for_mono()
-        await self.mono.set_slit_position(self.mono.Slit.A, slit_position)    
-        logger.debug("slit position of grating set")
-        await self.mono.set_mirror_position(self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL)
-        logger.debug("mirror position set")
-        await self._wait_for_mono()
-        mono_wavelength = await self.mono.get_current_wavelength()
-        logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
-        
-        cfg = await self.ccd.get_configuration()
-        logger.debug("getting config")
-        chip_x = int(cfg['chipWidth'])
-        chip_y = int(cfg['chipHeight'])
-        logger.debug(f"ccd dimensions: {chip_x=} {chip_y=}")
-        
-        await self.ccd.set_acquisition_count(1)
-        await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)           
-        await self.ccd.set_exposure_time(exposure)
-        await self.ccd.set_gain(gain) 
-        await self.ccd.set_speed(speed)            
-        await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
-        await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-        await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
-        await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
-        logger.debug("ccd settings complete")
+                if not await self.mono.is_initialized():
+                    await self.mono.initialize()
+                    logger.debug("mono initialized")    
+                    await self._wait_for_mono()
 
-        ready = await self.ccd.get_acquisition_ready()
-        if not ready:
-            raise RuntimeError("ccd not ready for acquisition")
-        await self.ccd.acquisition_start(open_shutter=True)
-        await asyncio.sleep(1) 
-        await self._wait_for_ccd()
-        
-        raw = await self.ccd.get_acquisition_data()
-        print("spectrum acquired")
-        x_data = raw[0]['roi'][0]['xData']
-        y_data = raw[0]['roi'][0]['yData']
-        await self.shutdown()
+                await self.mono.set_turret_grating(grating)
+                logger.debug("grating set")
+                await self._wait_for_mono()
 
-        return x_data, y_data
+                await self.mono.move_to_target_wavelength(center_wavelength)
+                logger.debug("mono moved to target wavelength")
+                await self._wait_for_mono()
+                await self.mono.set_slit_position(self.mono.Slit.A, slit_position)    
+                logger.debug("slit position of grating set")
+                await self.mono.set_mirror_position(self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL)
+                logger.debug("mirror position set")
+                await self._wait_for_mono()
+                mono_wavelength = await self.mono.get_current_wavelength()
+                logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
+                cfg = await self.ccd.get_configuration()
+                logger.debug("getting config")
+                chip_x = int(cfg['chipWidth'])
+                chip_y = int(cfg['chipHeight'])
+                logger.debug(f"ccd dimensions: {chip_x=} {chip_y=}")
         
-    async def acquire_spectrum(self) -> dict[Any, Any]:
-        logger.info("starting acquisition")
-        await self.ccd.open()
-        await self._wait_for_ccd()
-        logger.debug("ccd opened")
-        ready = await self.ccd.get_acquisition_ready()
-        if not ready:
-            logger.critical("ccd not ready for acquisition")
-            raise RuntimeError("ccd not ready for acquisition")
-        await self.ccd.acquisition_start(open_shutter=True)
-        await asyncio.sleep(1) 
-        await self._wait_for_ccd()
+                await self.ccd.set_acquisition_count(1)
+                await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)           
+                await self.ccd.set_exposure_time(exposure)
+                await self.ccd.set_gain(gain) 
+                await self.ccd.set_speed(speed)            
+                await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
+                await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
+                await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
+                await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
+                logger.debug("ccd settings complete")
+                logger.debug("initialization complete")
+
+                self.prev_center_wavelength = center_wavelength
+                self.prev_exposure = exposure
+                self.prev_grating = grating
+                self.prev_slit_position = slit_position
+                self.prev_gain = gain
+                self.prev_speed = speed
+                return True
         
-        raw = await self.ccd.get_acquisition_data()
-        logger.success("spectrum acquired")
-        x = raw[0]['roi'][0]['xData']
-        y = raw[0]['roi'][0]['yData']
+            except Exception as e:
+                logger.error(f"Error during initialization: {str(e)}")
+                return False
         
-        await self.shutdown()
+        else: 
+            logger.debug("skipping init")
+            return True
         
-        return x, y
+    async def acquire_spectrum(self, **kwargs) -> dict[Any, Any]:
+    
+        logger.debug("starting acqn")
+        if not await self.initialize(**kwargs):
+            logger.error("failed initialization")
+            raise RuntimeError("failed initialization")
+        
+        else:
+            ready = await self.ccd.get_acquisition_ready()
+
+            if not ready:
+                    logger.critical("ccd not ready for acquisition")
+                    raise RuntimeError("ccd not ready for acquisition")
+            
+            await self.ccd.acquisition_start(open_shutter=True)
+            await asyncio.sleep(1) 
+            await self._wait_for_ccd()
+        
+            raw = await self.ccd.get_acquisition_data()
+            logger.success("spectrum acquired")
+            x = raw[0]['roi'][0]['xData']
+            y = raw[0]['roi'][0]['yData']
+        
+            await self.shutdown()
+        
+            return x, y
     
     async def _wait_for_mono(self) -> None:
         if self.mono is None:

@@ -11,13 +11,13 @@ class MainWindow(ManagedWindow):
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
                 "excitation_wavelength", "center_wavelength", "exposure", "grating", "slit_position",
-                "mirror_position", "gain", "speed"
+                "gain", "speed"
             ],
             displays=[
                 "excitation_wavelength",
                 "center_wavelength",
                 "exposure", "grating", "slit_position",
-                "mirror_position", "gain", "speed"
+                "gain", "speed"
             ],
             x_axis="Wavelength",
             y_axis="Intensity"

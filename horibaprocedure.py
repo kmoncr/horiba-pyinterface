@@ -9,9 +9,9 @@ class GratingEnum(Enum):
     THIRD = "Monochromator.Grating.THIRD"
     
 GRATING_CHOICES = {
-    'First (1800)': GratingEnum.FIRST,
-    'Second (600)': GratingEnum.SECOND,
-    'Third (150)':GratingEnum.THIRD,
+    'First (1800 grooves/mm)': GratingEnum.FIRST,
+    'Second (600 grooves/mm)': GratingEnum.SECOND,
+    'Third (150 grooves/mm)': GratingEnum.THIRD
 }
 
 class Gain(Enum):
@@ -65,11 +65,11 @@ class HoribaSpectrumProcedure(Procedure):
     excitation_wavelength = FloatParameter("Excitation Wavelength", units = 'nm', default = 532 )
     center_wavelength = FloatParameter("Center Wavelength", units = 'nm', default=780)
     exposure         = IntegerParameter("Exposure", units = 'ms', default=1000)
-    grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150)')
+    grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150 grooves/mm)')
     # slit             = IntegerParameter("Slit", default = 1) //hardcoded slit, mirror selections
     slit_position    = FloatParameter("Slit position",  units = 'mm',        default=0.1)
     # mirror = IntegerParameter("Mirror", default = 1)
-    mirror_position  = IntegerParameter("Mirror position",       default=0)
+    #  mirror_position  = IntegerParameter("Mirror position",       default=0)
     gain = ListParameter("Gain", choices=['Ultimate Sensitivity', 'High Sensitivity', 'Best Dynamic Range', 'High Light'], default='High Light')
     #speed            = IntegerParameter("Speed",            default=2) #list: 50khz, 1mhz, 3mhz
     speed = ListParameter("Speed", choices=['50 kHz', '1 mHz', '3 mHz'])
@@ -84,13 +84,13 @@ class HoribaSpectrumProcedure(Procedure):
         #'slit': self.slit,
         'slit_position': self.slit_position,
         #'mirror': self.mirror,
-        'mirror_position': self.mirror_position,
+        # #'mirror_position': self.mirror_position,
         'gain': self.enumconv('gain', self.gain),
         'speed': self.enumconv('speed', self.speed),
     }
         
         self.controller = HoribaController()
-        x_data, y_data = asyncio.run(self.controller.initialize(**params))
+        x_data, y_data = asyncio.run(self.controller.acquire_spectrum(**params))
         
         for i in range(len(y_data)):
             for x, y in zip(x_data, y_data[i]):
