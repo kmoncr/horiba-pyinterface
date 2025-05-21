@@ -24,6 +24,7 @@ class MainWindow(ManagedWindow):
         )
         self.setWindowTitle("horiba spectrum scan")
 
+
     def make_filename(self):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"spectrum_data_{ts}.csv"
