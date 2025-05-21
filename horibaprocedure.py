@@ -95,7 +95,7 @@ class HoribaSpectrumProcedure(Procedure):
         for i in range(len(y_data)):
             for x, y in zip(x_data, y_data[i]):
                 self.emit("results", {
-                    "Wavelength": x, #change to shift from initial lambda
+                    "Wavelength": x, 
                     "Wavenumber": (1/self.excitation_wavelength - 1 /x) * 1e7,
                     "Intensity": y
                 })
