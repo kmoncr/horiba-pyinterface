@@ -94,7 +94,6 @@ class HoribaController:
             mono_wavelength = await self.mono.get_current_wavelength()
             logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
 
-            print("reached cfg")
             cfg = await self.ccd.get_configuration()
             await self._wait_for_ccd()
             logger.debug("getting config")
@@ -103,13 +102,10 @@ class HoribaController:
             logger.debug(f"ccd dimensions: {chip_x=} {chip_y=}")
 
             await self.ccd.set_acquisition_count(1)
-            print("set acq count")
             await self._wait_for_ccd()
-            print (center_wavelength!= self.prev_center_wavelength)
             if center_wavelength != self.prev_center_wavelength:
                 await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)   
                 await self._wait_for_ccd()
-                print("set center wavelength")
                 self.prev_center_wavelength = center_wavelength
                 logger.debug("ccd center wavelength set")
 
