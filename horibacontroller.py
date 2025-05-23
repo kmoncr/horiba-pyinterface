@@ -46,39 +46,30 @@ class HoribaController:
         speed = kwargs.get("speed", 2)
 
         try:
-            logger.info("checking device states for updates")
+            await self._dm.start()
+            monos = self._dm.monochromators
+            ccds = self._dm.charge_coupled_devices
+            if not monos or not ccds:
+                    logger.critical("no monochromator or ccd found")
+                    raise RuntimeError("no mono or ccd found")
 
-            if self.mono is None or not await self.mono.is_open():
-                logger.debug("initializing monochromator")
-                await self._dm.start()
-                monos = self._dm.monochromators
-                if not monos:
-                    logger.critical("no monochromator found")
-                    raise RuntimeError("no monochromator found")
-                self.mono = monos[0]
+            self.mono = monos[0]
+            self.ccd = ccds[0]
+
+            if not await self.mono.is_open():
+                logger.debug("opening mono")
                 await self.mono.open()
                 await self._wait_for_mono()
 
-            if self.ccd is None or not await self.ccd.is_open():
+            if not await self.ccd.is_open():
                 logger.debug("initializing ccd")
-                ccds = self._dm.charge_coupled_devices
-                if not ccds:
-                    logger.critical("no CCD found")
-                    raise RuntimeError("no CCD found")
-                self.ccd = ccds[0]
                 await self.ccd.open()
                 await self._wait_for_ccd()
 
-            if center_wavelength != self.prev_center_wavelength:
-                await self.mono.move_to_target_wavelength(center_wavelength)
-                logger.debug(f"monochromator wavelength set to {center_wavelength} nm")
+            if not await self.mono.is_initialized():
+                await self.mono.initialize()
+                logger.debug("monochromator initialized")
                 await self._wait_for_mono()
-                self.prev_center_wavelength = center_wavelength
-
-            if exposure != self.prev_exposure:
-                await self.ccd.set_exposure_time(exposure)
-                logger.debug(f"CCD exposure time set to {exposure} ms")
-                self.prev_exposure = exposure
 
             if grating != self.prev_grating:
                 await self.mono.set_turret_grating(grating)
@@ -86,33 +77,69 @@ class HoribaController:
                 await self._wait_for_mono()
                 self.prev_grating = grating
 
+            if center_wavelength != self.prev_center_wavelength:
+                await self.mono.move_to_target_wavelength(center_wavelength)
+                logger.debug(f"monochromator wavelength set to {center_wavelength} nm")
+                await self._wait_for_mono()
+
             if slit_position != self.prev_slit_position:
                 await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
                 logger.debug(f"monochromator slit position set to {slit_position}")
                 await self._wait_for_mono()
                 self.prev_slit_position = slit_position
 
+            await self.mono.set_mirror_position(self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL)
+            logger.debug("mirror position set")
+            await self._wait_for_mono()
+            mono_wavelength = await self.mono.get_current_wavelength()
+            logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
+
+            print("reached cfg")
+            cfg = await self.ccd.get_configuration()
+            await self._wait_for_ccd()
+            logger.debug("getting config")
+            chip_x = int(cfg['chipWidth'])
+            chip_y = int(cfg['chipHeight'])
+            logger.debug(f"ccd dimensions: {chip_x=} {chip_y=}")
+
+            await self.ccd.set_acquisition_count(1)
+            print("set acq count")
+            await self._wait_for_ccd()
+            print (center_wavelength!= self.prev_center_wavelength)
+            if center_wavelength != self.prev_center_wavelength:
+                await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)   
+                await self._wait_for_ccd()
+                print("set center wavelength")
+                self.prev_center_wavelength = center_wavelength
+                logger.debug("ccd center wavelength set")
+
+            if exposure != self.prev_exposure:
+                await self.ccd.set_exposure_time(exposure)
+                await self._wait_for_ccd()
+                logger.debug(f"CCD exposure time set to {exposure} ms")
+                self.prev_exposure = exposure
+
             if gain != self.prev_gain:
                 await self.ccd.set_gain(gain)
+                await self._wait_for_ccd()
                 logger.debug(f"CCD gain set to {gain}")
                 self.prev_gain = gain
 
             if speed != self.prev_speed:
                 await self.ccd.set_speed(speed)
+                await self._wait_for_ccd()
                 logger.debug(f"CCD speed set to {speed}")
                 self.prev_speed = speed
-
-            if not await self.mono.is_initialized():
-                await self.mono.initialize()
-                logger.debug("monochromator initialized")
-                await self._wait_for_mono()
-
-            if not await self.ccd.is_initialized():
-                await self.ccd.set_acquisition_count(1)
-                await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
-                await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
-                await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-                logger.debug("CCD initialization complete")
+            
+            await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
+            await self._wait_for_ccd()
+            await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
+            await self._wait_for_ccd()
+            await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
+            await self._wait_for_ccd()
+            await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
+            await self._wait_for_ccd()
+            logger.debug("ccd settings complete")
 
             logger.debug("initialization complete")
             return True
