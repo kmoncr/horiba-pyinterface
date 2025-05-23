@@ -39,7 +39,6 @@ SPEED_CHOICES = {
 }
 
 PARAM_MAP = {
-    # 'grating': GRATING_CHOICES,
     'gain': GAIN_CHOICES,
     'speed': SPEED_CHOICES
 }
@@ -71,8 +70,7 @@ class HoribaSpectrumProcedure(Procedure):
     # mirror = IntegerParameter("Mirror", default = 1)
     #  mirror_position  = IntegerParameter("Mirror position",       default=0)
     gain = ListParameter("Gain", choices=['Ultimate Sensitivity', 'High Sensitivity', 'Best Dynamic Range', 'High Light'], default='High Light')
-    #speed            = IntegerParameter("Speed",            default=2) #list: 50khz, 1mhz, 3mhz
-    speed = ListParameter("Speed", choices=['50 kHz', '1 mHz', '3 mHz'])
+    speed = ListParameter("Speed", choices=['50 kHz', '1 mHz', '3 mHz'])#
 
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
 

@@ -4,7 +4,6 @@ from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import QLabel, QSpinBox, QHBoxLayout, QWidget, QSizePolicy, QVBoxLayout
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure
-from pymeasure.display.widgets.fileinput_widget import FileInputWidget
 from pymeasure.experiment import Results
 from time import sleep
 
