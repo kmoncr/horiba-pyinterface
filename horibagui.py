@@ -44,13 +44,8 @@ class MainWindow(ManagedWindow):
         scan_layout.addStretch()  # push left
         scan_widget.setLayout(scan_layout)
         self.inputs.layout().addWidget(scan_widget)
+
         self.file_input.extensions = ['csv']
-
-
-    def get_save_path(self):
-        directory = self.file_input.directory
-        filename = self.file_input.filename
-        return f"{directory}/{filename}"
     
     def queue(self):
         num_scans = self.scan_count_spinbox.value()
@@ -62,10 +57,15 @@ class MainWindow(ManagedWindow):
 
         filename_root, extension = os.path.splitext(base_filename)
         for i in range(num_scans):
+            count = 1
+            while True:
+                unique_filename = f"{filename_root}_{count}{extension}"
+                full_path = os.path.join(directory, unique_filename)
+                if not os.path.exists(full_path):
+                    break
+                count += 1
+                
             procedure = self.make_procedure()
-            unique_filename = f"{filename_root}_{i+1}{extension}"
-            full_path = os.path.join(directory, unique_filename)
-
             procedure.data_filename = full_path
             experiment = self.new_experiment(Results(procedure, procedure.data_filename))
             self.manager.queue(experiment)
