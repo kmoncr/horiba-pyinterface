@@ -1,5 +1,5 @@
 import asyncio
-from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter
+from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter, Parameter
 from horibacontroller import HoribaController
 from enum import Enum
 
@@ -21,10 +21,10 @@ class Gain(Enum):
     FOURTH = 3
 
 GAIN_CHOICES = {
-    'Ultimate Sensitivity': Gain.FIRST,
+    'Ultimate Sensitivity': Gain.THIRD,
     'High Sensitivity': Gain.SECOND, 
-    'Best Dynamic Range': Gain.THIRD, 
-    'High Light': Gain.FOURTH
+    'Best Dynamic Range': Gain.FOURTH,
+    'High Light': Gain.FIRST
 }
 
 class Speed(Enum):
@@ -61,9 +61,9 @@ class HoribaSpectrumProcedure(Procedure):
             print(f"Error: Value '{value}' not found in {param_name} choices.")
             return None
         
-
+    data_filename = Parameter("Filename")
     excitation_wavelength = FloatParameter("Excitation Wavelength", units = 'nm', default = 532 )
-    center_wavelength = FloatParameter("Center Wavelength", units = 'nm', default=780)
+    center_wavelength = FloatParameter("Center Wavelength", units = 'nm', default=545)
     exposure         = IntegerParameter("Exposure", units = 'ms', default=1000)
     grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150 grooves/mm)')
     # slit             = IntegerParameter("Slit", default = 1) //hardcoded slit, mirror selections
@@ -99,3 +99,8 @@ class HoribaSpectrumProcedure(Procedure):
                     "Wavenumber": (1/self.excitation_wavelength - 1 /x) * 1e7,
                     "Intensity": y
                 })
+
+
+    @property
+    def procedure(self):
+        return self

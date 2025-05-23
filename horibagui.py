@@ -1,9 +1,10 @@
-import datetime
+import os
 import sys
 from pymeasure.display.Qt import QtWidgets
-from PyQt5.QtWidgets import QLabel, QSpinBox, QHBoxLayout, QWidget, QSizePolicy
+from PyQt5.QtWidgets import QLabel, QSpinBox, QHBoxLayout, QWidget, QSizePolicy, QVBoxLayout
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure
+from pymeasure.display.widgets.fileinput_widget import FileInputWidget
 from pymeasure.experiment import Results
 from time import sleep
 
@@ -22,7 +23,7 @@ class MainWindow(ManagedWindow):
                 "gain", "speed"
             ],
             x_axis="Wavelength",
-            y_axis="Intensity"
+            y_axis="Intensity", 
         )
         self.setWindowTitle("horiba spectrum scan")
 
@@ -35,7 +36,6 @@ class MainWindow(ManagedWindow):
         self.scan_count_spinbox.setFixedWidth(60)
         self.scan_count_spinbox.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-# Put them side by side in a QWidget with QHBoxLayout
         scan_widget = QWidget()
         scan_layout = QHBoxLayout()
         scan_layout.setContentsMargins(0, 0, 0, 0)
@@ -44,25 +44,31 @@ class MainWindow(ManagedWindow):
         scan_layout.addWidget(self.scan_count_spinbox)
         scan_layout.addStretch()  # push left
         scan_widget.setLayout(scan_layout)
-
-# Add this widget to the vertical inputs layout
         self.inputs.layout().addWidget(scan_widget)
+        self.file_input.extensions = ['csv']
 
 
-
-    def make_filename(self):
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"spectrum_data_{ts}.csv"
-        return filename
+    def get_save_path(self):
+        directory = self.file_input.directory
+        filename = self.file_input.filename
+        return f"{directory}/{filename}"
     
     def queue(self):
         num_scans = self.scan_count_spinbox.value()
+        directory = self.file_input.directory
+        base_filename = self.file_input.filename
 
+        if not base_filename.lower().endswith('.csv'):
+            base_filename += '.csv'
+
+        filename_root, extension = os.path.splitext(base_filename)
         for i in range(num_scans):
             procedure = self.make_procedure()
-            filename = self.make_filename()
-            results = Results(procedure, filename)
-            experiment = self.new_experiment(results)
+            unique_filename = f"{filename_root}_{i+1}{extension}"
+            full_path = os.path.join(directory, unique_filename)
+
+            procedure.data_filename = full_path
+            experiment = self.new_experiment(Results(procedure, procedure.data_filename))
             self.manager.queue(experiment)
             sleep(2)
 
