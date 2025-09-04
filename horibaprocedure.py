@@ -63,7 +63,7 @@ class HoribaSpectrumProcedure(Procedure):
     data_filename = Parameter("Filename")
     excitation_wavelength = FloatParameter("Excitation Wavelength", units = 'nm', default = 532 )
     center_wavelength = FloatParameter("Center Wavelength", units = 'nm', default=545)
-    exposure         = IntegerParameter("Exposure", units = 'ms', default=1000)
+    exposure         = IntegerParameter("Exposure", units = 's', default=1)
     grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150 grooves/mm)')
     # slit             = IntegerParameter("Slit", default = 1) //hardcoded slit, mirror selections
     slit_position    = FloatParameter("Slit position",  units = 'mm',        default=0.1)

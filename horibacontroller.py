@@ -39,7 +39,7 @@ class HoribaController:
 
     async def initialize(self, **kwargs):
         center_wavelength = kwargs.get("center_wavelength", 780)
-        exposure = kwargs.get("exposure", 1000)
+        exposure = kwargs.get("exposure", 1)
         grating = kwargs.get("grating", "Monochromator.Grating.THIRD")
         slit_position = kwargs.get("slit_position", 0.1)
         gain = kwargs.get("gain", 0)
@@ -110,7 +110,7 @@ class HoribaController:
                 logger.debug("ccd center wavelength set")
 
             if exposure != self.prev_exposure:
-                await self.ccd.set_exposure_time(exposure)
+                await self.ccd.set_exposure_time(exposure * 1e3)  # convert s to ms
                 await self._wait_for_ccd()
                 logger.debug(f"CCD exposure time set to {exposure} ms")
                 self.prev_exposure = exposure
