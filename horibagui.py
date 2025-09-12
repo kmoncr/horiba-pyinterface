@@ -4,6 +4,7 @@ from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import QLabel, QSpinBox, QHBoxLayout, QWidget, QSizePolicy, QVBoxLayout
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure
+from horibacontroller import HoribaController
 from pymeasure.experiment import Results
 from time import sleep
 
@@ -25,6 +26,7 @@ class MainWindow(ManagedWindow):
             y_axis="Intensity", 
         )
         self.setWindowTitle("horiba spectrum scan")
+        self.controller = HoribaController()
 
         scan_count_label = QLabel("Number of scans:")
         scan_count_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -46,7 +48,12 @@ class MainWindow(ManagedWindow):
         self.inputs.layout().addWidget(scan_widget)
 
         self.file_input.extensions = ['csv']
-    
+
+    def make_procedure(self):
+        procedure = self.procedure_class()
+        procedure.controller = self.controller  # persistent controller
+        return procedure
+
     def queue(self):
         num_scans = self.scan_count_spinbox.value()
         directory = self.file_input.directory
@@ -64,9 +71,10 @@ class MainWindow(ManagedWindow):
                 if not os.path.exists(full_path):
                     break
                 count += 1
-                
+
             procedure = self.make_procedure()
             procedure.data_filename = full_path
+
             experiment = self.new_experiment(Results(procedure, procedure.data_filename))
             self.manager.queue(experiment)
             sleep(2)
