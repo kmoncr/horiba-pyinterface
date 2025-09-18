@@ -31,6 +31,30 @@ class MainWindow(ManagedWindow):
         self.controller = HoribaController()
         self._shutdown_complete = False
 
+         # Creating the combo box for the 'grating' parameter
+        self.grating_combo = QComboBox()
+        self.grating_combo.addItems(list(GRATING_CHOICES.keys()))  # Add the keys from your GRATING_CHOICES
+
+        # Set the default value for the grating combo box
+        default_grating = 'Third (150 grooves/mm)'
+        self.grating_combo.setCurrentText(default_grating)
+
+        # Connect the combo box change event to a method that updates the grating parameter
+        self.grating_combo.currentTextChanged.connect(self.update_grating)
+
+        grating_widget = QWidget()
+        grating_layout = QHBoxLayout()
+        grating_layout.addWidget(QLabel("Grating:"))
+        grating_layout.addWidget(self.grating_combo)
+        grating_widget.setLayout(grating_layout)
+
+        # Add the custom grating widget to your layout
+        self.inputs.layout().addWidget(grating_widget)
+
+    def update_grating(self, selected_grating):
+        # Update the grating parameter based on the selected item
+        self.grating = GRATING_CHOICES[selected_grating]
+
         scan_count_label = QLabel("Number of scans:")
         scan_count_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
