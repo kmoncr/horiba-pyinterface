@@ -16,7 +16,7 @@ class HoribaController:
         icl_ip: str = "127.0.0.1",
         icl_port: str = "25010",
         enable_binary: bool = True,
-        enable_logging: bool = False,
+        enable_logging: bool = True,
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
     ):
@@ -51,7 +51,6 @@ class HoribaController:
         self.prev_rotation_angle = None
 
     async def _ensure_initialized(self):
-        """Ensure the device manager and devices are initialized (called once per session)"""
         if self._is_initialized:
             return True
             
@@ -102,8 +101,6 @@ class HoribaController:
                 await self._wait_for_ccd()
                 await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
                 await self._wait_for_ccd()
-                await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
-                await self._wait_for_ccd()
                 
                 self._devices_opened = True
                 logger.debug("devices opened and configured")
@@ -125,16 +122,16 @@ class HoribaController:
             return False
 
     async def _configure_for_acquisition(self, **kwargs):
-        """Configure devices for a specific acquisition (called each time)"""
         center_wavelength = kwargs.get("center_wavelength", 780)
         exposure = kwargs.get("exposure", 1)
-        grating = kwargs.get("grating", "Monochromator.Grating.THIRD")
+        grating = kwargs.get("grating")
         slit_position = kwargs.get("slit_position", 0.1)
         gain = kwargs.get("gain", 0)
         speed = kwargs.get("speed", 2)
         rotation_angle = kwargs.get("rotation_angle", None)  
 
         if grating != self.prev_grating:
+            logger.debug(grating)
             await self.mono.set_turret_grating(grating)
             logger.debug(f"monochromator grating set to {grating}")
             await self._wait_for_mono()
@@ -149,6 +146,8 @@ class HoribaController:
             await self._wait_for_ccd()
             self.prev_center_wavelength = center_wavelength
             logger.debug("ccd center wavelength set")
+            await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
+            await self._wait_for_ccd()
 
         if slit_position != self.prev_slit_position:
             await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
@@ -189,7 +188,6 @@ class HoribaController:
         logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
-        """Acquire a spectrum with the given parameters"""
         logger.debug("starting acquisition")
         
         if not await self._ensure_initialized():
@@ -262,7 +260,6 @@ class HoribaController:
         return {g["token"]: g["info"] for g in cfg["gains"]}
 
     def set_rotation_angle(self, angle: float) -> None:
-        """Set rotation stage angle (synchronous)"""
         if not self.enable_rotation_stage or not self.rotation_stage:
             logger.warning("Rotation stage not enabled")
             return
@@ -275,7 +272,6 @@ class HoribaController:
         self.rotation_stage.degree = angle
 
     def get_rotation_angle(self) -> float:
-        """Get current rotation stage angle"""
         if not self.enable_rotation_stage or not self.rotation_stage:
             return 0.0
         
@@ -285,7 +281,6 @@ class HoribaController:
         return self.rotation_stage.degree
 
     def return_rotation_to_origin(self) -> None:
-        """Return rotation stage to origin"""
         if not self.enable_rotation_stage or not self.rotation_stage:
             logger.warning("Rotation stage not enabled")
             return
@@ -297,7 +292,6 @@ class HoribaController:
         self.rotation_stage.return_to_origin()
 
     def get_rotation_status(self) -> dict:
-        """Get rotation stage status"""
         if not self.enable_rotation_stage or not self.rotation_stage:
             return {"enabled": False}
         
@@ -316,7 +310,6 @@ class HoribaController:
         await self.ccd.set_exposure_time(exposure_ms)
 
     async def shutdown(self) -> None:
-        """Shutdown devices and device manager (called when GUI closes)"""
         logger.info("shutting down devices")
         
         if self.enable_rotation_stage and self.rotation_stage:
@@ -332,7 +325,6 @@ class HoribaController:
         logger.success("devices shut down")
         
     def __del__(self):
-        """Ensure cleanup on object destruction"""
         if self._is_initialized:
             try:
                 asyncio.create_task(self.shutdown())

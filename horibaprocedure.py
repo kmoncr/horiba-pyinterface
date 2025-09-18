@@ -1,10 +1,11 @@
 from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter, Parameter
 from enum import Enum
+from horiba_sdk.devices.single_devices import Monochromator
 
 class GratingEnum(Enum):
-    FIRST = "Monochromator.Grating.FIRST"
-    SECOND = "Monochromator.Grating.SECOND"
-    THIRD = "Monochromator.Grating.THIRD"
+    FIRST = Monochromator.Grating.FIRST
+    SECOND = Monochromator.Grating.SECOND
+    THIRD = Monochromator.Grating.THIRD
     
 GRATING_CHOICES = {
     'First (1800 grooves/mm)': GratingEnum.FIRST,
@@ -61,7 +62,10 @@ class HoribaSpectrumProcedure(Procedure):
     
     def enumconv(self, param_name: str, value: str):
         if param_name == 'grating':
-            return GRATING_CHOICES.get(value).value if value in GRATING_CHOICES else None
+            grating_enum = GRATING_CHOICES.get(value)
+            if grating_enum:
+                return grating_enum.value 
+            return None
         enum_dict = PARAM_MAP.get(param_name)
         if enum_dict and value in enum_dict:
             return enum_dict[value].value
