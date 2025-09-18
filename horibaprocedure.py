@@ -42,15 +42,7 @@ PARAM_MAP = {
 }
 
 class HoribaSpectrumProcedure(Procedure):
-    def enumconv(self, param_name: str, value: str):
-        # convert UI strings to SDK values / enums
-        if param_name == 'grating':
-            return GRATING_CHOICES.get(value).value if value in GRATING_CHOICES else None
-        enum_dict = PARAM_MAP.get(param_name)
-        if enum_dict and value in enum_dict:
-            return enum_dict[value].value
-        return None
-        
+    
     data_filename = Parameter("Filename")
     excitation_wavelength = FloatParameter("Excitation Wavelength", units='nm', default=532.0)
     center_wavelength = FloatParameter("Center Wavelength", units='nm', default=545.0)
@@ -58,10 +50,22 @@ class HoribaSpectrumProcedure(Procedure):
     grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150 grooves/mm)')
     slit_position = FloatParameter("Slit position", units='mm', default=0.1)
     gain = ListParameter("Gain", choices=list(GAIN_CHOICES.keys()), default='High Light')
-    # speed previously had no default which caused "Missing 'speed'". Add explicit default.
     speed = ListParameter("Speed", choices=list(SPEED_CHOICES.keys()), default='50 kHz')
+    rotation_angle = FloatParameter("Rotation Angle", units='degrees', default=0.0, minimum=0.0, maximum=360.0)
 
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
+    
+    def __init__(self):
+        super().__init__()
+        self.controller = None 
+    
+    def enumconv(self, param_name: str, value: str):
+        if param_name == 'grating':
+            return GRATING_CHOICES.get(value).value if value in GRATING_CHOICES else None
+        enum_dict = PARAM_MAP.get(param_name)
+        if enum_dict and value in enum_dict:
+            return enum_dict[value].value
+        return None
 
     def execute(self):
         import asyncio
@@ -72,19 +76,17 @@ class HoribaSpectrumProcedure(Procedure):
             'slit_position': self.slit_position,
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
+            'rotation_angle': self.rotation_angle,
         }
 
-        # controller is injected by the GUI (persistent per session)
         x_data, y_data = asyncio.run(self.controller.acquire_spectrum(**params))
 
-        # flatten single-element nested lists from SDK
         if isinstance(x_data, list) and len(x_data) == 1:
             x_data = x_data[0]
         if isinstance(y_data, list) and len(y_data) == 1:
             y_data = y_data[0]
 
         for x, y in zip(x_data, y_data):
-            # if x is pixel index, conversion to wavelength/wavenumber must be handled elsewhere
             try:
                 wavenumber = (1.0 / self.excitation_wavelength - 1.0 / x) * 1e7
             except Exception:
