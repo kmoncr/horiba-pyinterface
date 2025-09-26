@@ -50,7 +50,12 @@ class HoribaController:
         self.prev_speed = None
         self.prev_rotation_angle = None
 
+    async def initialize(self, **kwargs):
+        """Public initialization method"""
+        return await self._ensure_initialized()
+
     async def _ensure_initialized(self):
+        """Private initialization implementation"""
         if self._is_initialized:
             return True
             
@@ -122,6 +127,16 @@ class HoribaController:
             return False
 
     async def _configure_for_acquisition(self, **kwargs):
+        """Configure devices for acquisition."""
+        logger.info("Configuring acquisition with parameters:")
+        for k, v in kwargs.items():
+            logger.info(f"  {k}: {v}")
+            if k == 'grating':
+                logger.debug(f"Grating type: {type(v)}, value: {v}")
+                # Verify it's a valid grating value
+                if not isinstance(v, (str, int)):
+                    logger.error(f"Invalid grating type: {type(v)}")
+
         center_wavelength = kwargs.get("center_wavelength", 780)
         exposure = kwargs.get("exposure", 1)
         grating = kwargs.get("grating")
@@ -188,29 +203,40 @@ class HoribaController:
         logger.info(f"final wavelength position: {mono_wavelength:.3f} nm")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
-        logger.debug("starting acquisition")
-        
-        if not await self._ensure_initialized():
-            logger.error("failed initialization")
-            raise RuntimeError("failed initialization")
-
+        """Acquire a single spectrum and return (x, y)."""
+        # Add explicit parameter logging at start
+        logger.info("Starting acquisition with parameters:")
+        for k, v in kwargs.items():
+            logger.info(f"  {k}: {v}")
+    
         await self._configure_for_acquisition(**kwargs)
+        
+        try:
+            ready = await self.ccd.get_acquisition_ready()
+            if not ready:
+                logger.error("CCD not ready for acquisition")
+                raise RuntimeError("CCD not ready for acquisition")
 
-        ready = await self.ccd.get_acquisition_ready()
-        if not ready:
-            logger.critical("ccd not ready for acquisition")
-            raise RuntimeError("ccd not ready for acquisition")
+            await self.ccd.acquisition_start(open_shutter=True)
+            await asyncio.sleep(0.2)
+            await self._wait_for_ccd()
 
-        await self.ccd.acquisition_start(open_shutter=True)
-        await asyncio.sleep(1)
-        await self._wait_for_ccd()
+            raw = await self.ccd.get_acquisition_data()
+            logger.success("Spectrum acquired successfully")
 
-        raw = await self.ccd.get_acquisition_data()
-        logger.success("spectrum acquired")
-        x = raw[0]["roi"][0]["xData"]
-        y = raw[0]["roi"][0]["yData"]
+            x = raw[0]["roi"][0].get("xData")
+            y = raw[0]["roi"][0].get("yData")
 
-        return x, y
+            # Flatten if nested
+            if isinstance(x, list) and len(x) == 1:
+                x = x[0]
+            if isinstance(y, list) and len(y) == 1:
+                y = y[0]
+
+            return x, y
+        except Exception as e:
+            logger.exception("Failed to acquire spectrum")
+            raise
 
     async def _wait_for_mono(self) -> None:
         if self.mono is None:
@@ -259,43 +285,26 @@ class HoribaController:
         cfg = await self.ccd.get_configuration()
         return {g["token"]: g["info"] for g in cfg["gains"]}
 
-    def set_rotation_angle(self, angle: float) -> None:
-        if not self.enable_rotation_stage or not self.rotation_stage:
-            logger.warning("Rotation stage not enabled")
-            return
-        
-        if not self.rotation_stage.is_connected:
+    async def set_rotation_angle(self, value: float) -> None:
+        """Set rotation stage angle asynchronously"""
+        if not hasattr(self, '_rotation_stage') or self._rotation_stage is None:
             logger.error("Rotation stage not connected")
             return
-            
-        logger.debug(f"Setting rotation angle to {angle} degrees")
-        self.rotation_stage.degree = angle
+        await self._rotation_stage.set_angle(value)
 
-    def get_rotation_angle(self) -> float:
-        if not self.enable_rotation_stage or not self.rotation_stage:
+    async def get_rotation_angle(self) -> float:
+        """Get current rotation stage angle asynchronously"""
+        if not hasattr(self, '_rotation_stage') or self._rotation_stage is None:
+            logger.error("Rotation stage not connected")
             return 0.0
-        
-        if not self.rotation_stage.is_connected:
-            return 0.0
-            
-        return self.rotation_stage.degree
+        return await self._rotation_stage.get_angle()
 
-    def return_rotation_to_origin(self) -> None:
-        if not self.enable_rotation_stage or not self.rotation_stage:
-            logger.warning("Rotation stage not enabled")
-            return
-            
-        if not self.rotation_stage.is_connected:
+    async def return_rotation_to_origin(self) -> None:
+        """Return rotation stage to origin asynchronously"""
+        if not hasattr(self, '_rotation_stage') or self._rotation_stage is None:
             logger.error("Rotation stage not connected")
             return
-            
-        self.rotation_stage.return_to_origin()
-
-    def get_rotation_status(self) -> dict:
-        if not self.enable_rotation_stage or not self.rotation_stage:
-            return {"enabled": False}
-        
-        return self.rotation_stage.get_status()
+        await self._rotation_stage.return_to_origin()
 
     async def set_gain(self, gain: int) -> None:
         logger.debug("setting gain: {}", gain)

@@ -1,12 +1,19 @@
 from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter, Parameter
 from enum import Enum
 from horiba_sdk.devices.single_devices import Monochromator
+from loguru import logger  
 
 class GratingEnum(Enum):
     FIRST = Monochromator.Grating.FIRST
     SECOND = Monochromator.Grating.SECOND
     THIRD = Monochromator.Grating.THIRD
-    
+
+# Add debug check
+logger.debug("Grating enum values:")
+logger.debug(f"  FIRST: {GratingEnum.FIRST.value}")
+logger.debug(f"  SECOND: {GratingEnum.SECOND.value}")
+logger.debug(f"  THIRD: {GratingEnum.THIRD.value}")
+
 GRATING_CHOICES = {
     'First (1800 grooves/mm)': GratingEnum.FIRST,
     'Second (600 grooves/mm)': GratingEnum.SECOND,
@@ -52,7 +59,7 @@ class HoribaSpectrumProcedure(Procedure):
     slit_position = FloatParameter("Slit position", units='mm', default=0.1)
     gain = ListParameter("Gain", choices=list(GAIN_CHOICES.keys()), default='High Light')
     speed = ListParameter("Speed", choices=list(SPEED_CHOICES.keys()), default='50 kHz')
-    rotation_angle = FloatParameter("Rotation Angle", units='degrees', default=0.0, minimum=0.0, maximum=360.0)
+    rotation_angle = FloatParameter("Rotation Angle", units="deg", default=0)
 
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
     
@@ -61,18 +68,28 @@ class HoribaSpectrumProcedure(Procedure):
         self.controller = None 
     
     def enumconv(self, param_name: str, value: str):
+        """Convert GUI string values to SDK enum values"""
+        logger.debug(f"Converting {param_name}: {value}")
+        
         if param_name == 'grating':
-            grating_enum = GRATING_CHOICES.get(value)
-            if grating_enum:
-                return grating_enum.value 
+            if value in GRATING_CHOICES:
+                enum_val = GRATING_CHOICES[value]  
+                logger.debug(f"Converted grating {value} -> {enum_val.value}")
+                return enum_val.value
+            logger.error(f"Invalid grating value: {value}")
             return None
+
         enum_dict = PARAM_MAP.get(param_name)
         if enum_dict and value in enum_dict:
-            return enum_dict[value].value
+            enum_val = enum_dict[value]
+            logger.debug(f"Converted {param_name} {value} -> {enum_val.value}")
+            return enum_val.value
+
+        logger.error(f"Unknown parameter or value: {param_name}={value}")
         return None
 
     def execute(self):
-        import asyncio
+        logger.debug(f"Raw grating parameter value: {self.grating}")
         params = {
             'center_wavelength': self.center_wavelength,
             'exposure': self.exposure,
@@ -80,11 +97,21 @@ class HoribaSpectrumProcedure(Procedure):
             'slit_position': self.slit_position,
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
-            'rotation_angle': self.rotation_angle,
         }
+        logger.debug(f"Converted grating value: {params['grating']}")
 
-        x_data, y_data = asyncio.run(self.controller.acquire_spectrum(**params))
+        logger.info("Executing procedure with converted parameters:")
+        for k, v in params.items():
+            logger.info(f"  {k}: {v}")
 
+        try:
+            x_data, y_data = self.loop.run_until_complete(
+                self.controller.acquire_spectrum(**params)
+            )
+        except Exception as e:
+            logger.exception("acquire_spectrum failed")
+            raise
+        
         if isinstance(x_data, list) and len(x_data) == 1:
             x_data = x_data[0]
         if isinstance(y_data, list) and len(y_data) == 1:
