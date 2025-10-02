@@ -68,7 +68,6 @@ class HoribaSpectrumProcedure(Procedure):
         if param_name == 'grating':
             if value in GRATING_CHOICES:
                 enum_val = GRATING_CHOICES[value]  
-                logger.debug(f"Converted grating {value} -> {enum_val.value}")
                 return enum_val.value
             logger.error(f"Invalid grating value: {value}")
             return None
@@ -83,7 +82,6 @@ class HoribaSpectrumProcedure(Procedure):
         return None
 
     def execute(self):
-        logger.debug(f"Raw grating parameter value: {self.grating}")
         params = {
             'center_wavelength': self.center_wavelength,
             'exposure': self.exposure,
@@ -92,11 +90,10 @@ class HoribaSpectrumProcedure(Procedure):
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
         }
-        logger.debug(f"Converted grating value: {params['grating']}")
 
-        logger.info("Executing procedure with converted parameters:")
+        '''logger.info("Executing procedure with converted parameters:")
         for k, v in params.items():
-            logger.info(f"  {k}: {v}")
+            logger.info(f"  {k}: {v}")'''
 
         try:
             x_data, y_data = self.loop.run_until_complete(

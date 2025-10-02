@@ -97,6 +97,8 @@ class HoribaController:
                 await self._wait_for_ccd()
                 await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
                 await self._wait_for_ccd()
+                await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
+                await self._wait_for_ccd()
                 
                 self._devices_opened = True
                 logger.debug("devices opened and configured")
@@ -143,9 +145,6 @@ class HoribaController:
         await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
         await self._wait_for_ccd()
     
-        await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
-        await self._wait_for_ccd()
-    
         logger.debug(f"Setting slit position to {slit_position}")
         await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
         await self._wait_for_mono()
@@ -186,13 +185,8 @@ class HoribaController:
             raw = await self.ccd.get_acquisition_data()
             logger.success("Spectrum acquired successfully")
 
-            x = raw[0]["roi"][0].get("xData")
-            y = raw[0]["roi"][0].get("yData")
-
-            if isinstance(x, list) and len(x) == 1:
-             x = x[0]
-            if isinstance(y, list) and len(y) == 1:
-              y = y[0]
+            x = raw[0]["roi"][0]["xData"]
+            y = raw[0]["roi"][0]["yData"]
 
             return x, y
         
@@ -284,7 +278,8 @@ class HoribaController:
             except Exception as e:
                 logger.error(f"Error stopping device manager: {e}")
     
-    logger.success("devices shut down")
+        logger.success("devices shut down")
+        
     def __del__(self):
         if self._is_initialized:
             try:
