@@ -17,7 +17,7 @@ class MainWindow(ManagedWindow):
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
                 "excitation_wavelength", "center_wavelength", "exposure",
-                "grating", "slit_position", "gain", "speed"  # removed rotation_angle
+                "grating", "slit_position", "gain", "speed"  
             ],
             displays=[
                 "excitation_wavelength", "center_wavelength", "exposure",
@@ -28,7 +28,6 @@ class MainWindow(ManagedWindow):
         )
         self.setWindowTitle("Horiba Spectrum Scan")
 
-        # Create persistent event loop and controller
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.controller = HoribaController(enable_logging=True)
@@ -39,7 +38,6 @@ class MainWindow(ManagedWindow):
             logger.error(f"Failed to initialize controller: {e}")
             raise
 
-        # Create grating selector
         grating_widget = QGroupBox("Grating Control")
         grating_layout = QHBoxLayout()
         
@@ -50,7 +48,6 @@ class MainWindow(ManagedWindow):
         grating_layout.addWidget(self.grating_combo)
         grating_widget.setLayout(grating_layout)
 
-        # Create rotation control
         rotation_widget = QGroupBox("Rotation Control")
         rotation_layout = QHBoxLayout()
         
@@ -65,7 +62,6 @@ class MainWindow(ManagedWindow):
         rotation_layout.addWidget(self.return_origin_button)
         rotation_widget.setLayout(rotation_layout)
 
-        # Create scan count input
         scan_widget = QGroupBox("Scan Control")
         scan_layout = QHBoxLayout()
         
@@ -79,21 +75,18 @@ class MainWindow(ManagedWindow):
         scan_layout.addStretch()
         scan_widget.setLayout(scan_layout)
 
-        # Add widgets to inputs
         self.inputs.layout().addWidget(grating_widget)
         self.inputs.layout().addWidget(rotation_widget)
         self.inputs.layout().addWidget(scan_widget)
 
-        # Set initial values using correct setValue() method
         if hasattr(self.inputs, "grating"):
             grating_value = getattr(self.inputs, "grating").value()
-            self.grating_combo.setCurrentText(str(grating_value))  # Ensure string
+            self.grating_combo.setCurrentText(str(grating_value))  
         
         if hasattr(self.inputs, "rotation_angle"):
             rotation_value = getattr(self.inputs, "rotation_angle").value()
-            self.rotation_input.setValue(int(rotation_value))  # Convert to int
+            self.rotation_input.setValue(int(rotation_value))  
 
-        # Setup rotation angle refresh timer
         self.rotation_timer = QTimer()
         self.rotation_timer.timeout.connect(self.refresh_rotation_angle)
         self.rotation_timer.start(1000)
@@ -105,7 +98,6 @@ class MainWindow(ManagedWindow):
         if hasattr(self.inputs, "grating"):
             logger.info(f"GUI: Grating changed to {text}")
             input_widget = getattr(self.inputs, "grating")
-            # Add debug logging
             logger.debug(f"Before setValue: current value = {input_widget.value()}")
             input_widget.setValue(text)
             logger.debug(f"After setValue: new value = {input_widget.value()}")
@@ -143,22 +135,18 @@ class MainWindow(ManagedWindow):
         procedure.controller = self.controller
         procedure.loop = self.loop
 
-        # Copy all parameter values from inputs to new procedure
         input_list = [
             "excitation_wavelength", "center_wavelength", "exposure",
-            "grating", "slit_position", "gain", "speed"  # removed rotation_angle
+            "grating", "slit_position", "gain", "speed"  
         ]
         
         logger.info("New procedure created with parameters:")
         for param_name in input_list:
             if hasattr(self.inputs, param_name):
-                # Get current value from inputs
                 value = getattr(self.inputs, param_name).value()
-                # Set value on new procedure instance
                 setattr(procedure, param_name, value)
                 logger.info(f"  {param_name}: {value}")
         
-        # Set rotation angle directly from the SpinBox
         procedure.rotation_angle = float(self.rotation_input.value())
         logger.info(f"  rotation_angle: {procedure.rotation_angle}")
         

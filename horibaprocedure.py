@@ -8,12 +8,6 @@ class GratingEnum(Enum):
     SECOND = Monochromator.Grating.SECOND
     THIRD = Monochromator.Grating.THIRD
 
-# Add debug check
-logger.debug("Grating enum values:")
-logger.debug(f"  FIRST: {GratingEnum.FIRST.value}")
-logger.debug(f"  SECOND: {GratingEnum.SECOND.value}")
-logger.debug(f"  THIRD: {GratingEnum.THIRD.value}")
-
 GRATING_CHOICES = {
     'First (1800 grooves/mm)': GratingEnum.FIRST,
     'Second (600 grooves/mm)': GratingEnum.SECOND,
