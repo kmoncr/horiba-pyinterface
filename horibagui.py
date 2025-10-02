@@ -180,8 +180,13 @@ class MainWindow(ManagedWindow):
     def closeEvent(self, event):
         """Clean shutdown of controller and event loop"""
         self.rotation_timer.stop()
-        self.loop.run_until_complete(self.controller.shutdown())
-        self.loop.close()
+        if not self.loop.is_closed():
+            try:
+                self.loop.run_until_complete(self.controller.shutdown())
+            except Exception as e:
+                logger.error(f"Error during shutdown: {e}")
+            finally:
+                self.loop.close()
         event.accept()
 
 if __name__ == "__main__":
