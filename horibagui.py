@@ -17,7 +17,7 @@ class MainWindow(ManagedWindow):
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
                 "excitation_wavelength", "center_wavelength", "exposure",
-                "grating", "slit_position", "gain", "speed"  
+                "slit_position", "gain", "speed"  
             ],
             displays=[
                 "excitation_wavelength", "center_wavelength", "exposure",
@@ -43,8 +43,10 @@ class MainWindow(ManagedWindow):
         
         self.grating_combo = QComboBox()
         self.grating_combo.addItems(GRATING_CHOICES.keys())
+        self.grating_combo.setCurrentText('Third (150 grooves/mm)')  
         self.grating_combo.currentTextChanged.connect(self.update_grating)
         
+        grating_layout.addWidget(QLabel("Current Grating:"))
         grating_layout.addWidget(self.grating_combo)
         grating_widget.setLayout(grating_layout)
 
@@ -53,11 +55,13 @@ class MainWindow(ManagedWindow):
         
         self.rotation_input = QSpinBox()
         self.rotation_input.setRange(0, 360)
+        self.rotation_input.setValue(0)
         self.rotation_input.valueChanged.connect(self.update_rotation)
         
         self.return_origin_button = QPushButton("Return to Origin")
         self.return_origin_button.clicked.connect(self.return_to_origin)
         
+        rotation_layout.addWidget(QLabel("Angle (deg):"))
         rotation_layout.addWidget(self.rotation_input)
         rotation_layout.addWidget(self.return_origin_button)
         rotation_widget.setLayout(rotation_layout)
@@ -79,14 +83,6 @@ class MainWindow(ManagedWindow):
         self.inputs.layout().addWidget(rotation_widget)
         self.inputs.layout().addWidget(scan_widget)
 
-        if hasattr(self.inputs, "grating"):
-            grating_value = getattr(self.inputs, "grating").value()
-            self.grating_combo.setCurrentText(str(grating_value))  
-        
-        if hasattr(self.inputs, "rotation_angle"):
-            rotation_value = getattr(self.inputs, "rotation_angle").value()
-            self.rotation_input.setValue(int(rotation_value))  
-
         self.rotation_timer = QTimer()
         self.rotation_timer.timeout.connect(self.refresh_rotation_angle)
         self.rotation_timer.start(1000)
@@ -94,25 +90,17 @@ class MainWindow(ManagedWindow):
         self.file_input.extensions = ['csv']
 
     def update_grating(self, text):
-        """Update procedure parameter when grating combo changes"""
-        if hasattr(self.inputs, "grating"):
-            logger.info(f"GUI: Grating changed to {text}")
-            input_widget = getattr(self.inputs, "grating")
-            logger.debug(f"Before setValue: current value = {input_widget.value()}")
-            input_widget.setValue(text)
-            logger.debug(f"After setValue: new value = {input_widget.value()}")
+       logger.info(f"GUI: Grating changed to {text}")
 
     def update_rotation(self, value):
-        """Update hardware when rotation input changes"""
         if self.controller:
-            logger.info(f"GUI: Rotation changed to {value}")
+            '''logger.info(f"GUI: Rotation changed to {value}")'''
             try:
                 self.loop.run_until_complete(self.controller.set_rotation_angle(float(value)))
             except Exception as e:
                 logger.error(f"Failed to set rotation angle: {e}")
 
     def refresh_rotation_angle(self):
-        """Update GUI with current hardware rotation angle"""
         if self.controller and hasattr(self.controller, "get_rotation_angle"):
             try:
                 current_angle = self.loop.run_until_complete(self.controller.get_rotation_angle())
@@ -122,7 +110,6 @@ class MainWindow(ManagedWindow):
                 logger.error(f"Failed to get rotation angle: {e}")
 
     def return_to_origin(self):
-        """Return rotation stage to origin"""
         if self.controller and hasattr(self.controller, "return_rotation_to_origin"):
             try:
                 self.loop.run_until_complete(self.controller.return_rotation_to_origin())
@@ -137,7 +124,7 @@ class MainWindow(ManagedWindow):
 
         input_list = [
             "excitation_wavelength", "center_wavelength", "exposure",
-            "grating", "slit_position", "gain", "speed"  
+            "slit_position", "gain", "speed"
         ]
         
         logger.info("New procedure created with parameters:")
@@ -146,6 +133,10 @@ class MainWindow(ManagedWindow):
                 value = getattr(self.inputs, param_name).value()
                 setattr(procedure, param_name, value)
                 logger.info(f"  {param_name}: {value}")
+        
+        grating_text = self.grating_combo.currentText()
+        procedure.grating = grating_text
+        logger.info(f"  grating: {grating_text}")
         
         procedure.rotation_angle = float(self.rotation_input.value())
         logger.info(f"  rotation_angle: {procedure.rotation_angle}")
@@ -178,7 +169,6 @@ class MainWindow(ManagedWindow):
             sleep(2)
 
     def closeEvent(self, event):
-        """Clean shutdown of controller and event loop"""
         self.rotation_timer.stop()
         if not self.loop.is_closed():
             try:
