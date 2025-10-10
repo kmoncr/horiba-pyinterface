@@ -194,8 +194,7 @@ class HoribaController:
         self.rotation_stage.return_to_origin()
 
     async def shutdown(self) -> None:
-        """Shutdown rotation stage only"""
-        logger.info("shutting down rotation stage")
+        logger.info("disconnecting rotation stage")
         if self.enable_rotation_stage and self.rotation_stage:
             try:
                 self.rotation_stage.disconnect()
