@@ -62,7 +62,6 @@ class HoribaSpectrumProcedure(Procedure):
         self.controller = None 
     
     def enumconv(self, param_name: str, value: str):
-        """Convert GUI string values to SDK enum values"""
         logger.debug(f"Converting {param_name}: {value}")
         
         if param_name == 'grating':

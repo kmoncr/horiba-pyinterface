@@ -31,12 +31,6 @@ class MainWindow(ManagedWindow):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.controller = HoribaController(enable_logging=True)
-        
-        try:
-            self.loop.run_until_complete(self.controller._ensure_initialized())
-        except Exception as e:
-            logger.error(f"Failed to initialize controller: {e}")
-            raise
 
         grating_widget = QGroupBox("Grating Control")
         grating_layout = QHBoxLayout()
@@ -94,14 +88,13 @@ class MainWindow(ManagedWindow):
 
     def update_rotation(self, value):
         if self.controller:
-            '''logger.info(f"GUI: Rotation changed to {value}")'''
             try:
                 self.loop.run_until_complete(self.controller.set_rotation_angle(float(value)))
             except Exception as e:
                 logger.error(f"Failed to set rotation angle: {e}")
 
     def refresh_rotation_angle(self):
-        if self.controller and hasattr(self.controller, "get_rotation_angle"):
+        if self.controller:
             try:
                 current_angle = self.loop.run_until_complete(self.controller.get_rotation_angle())
                 if current_angle != self.rotation_input.value():
@@ -110,7 +103,7 @@ class MainWindow(ManagedWindow):
                 logger.error(f"Failed to get rotation angle: {e}")
 
     def return_to_origin(self):
-        if self.controller and hasattr(self.controller, "return_rotation_to_origin"):
+        if self.controller:
             try:
                 self.loop.run_until_complete(self.controller.return_rotation_to_origin())
                 self.rotation_input.setValue(0)
