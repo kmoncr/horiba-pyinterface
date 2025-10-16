@@ -1,4 +1,6 @@
-from pymeasure.experiment import Procedure, FloatParameter, IntegerParameter, ListParameter, Parameter
+from pymeasure.experiment import (
+    Procedure, FloatParameter, ListParameter
+)
 from enum import Enum
 from horiba_sdk.devices.single_devices import Monochromator
 from loguru import logger  
@@ -44,29 +46,28 @@ PARAM_MAP = {
 }
 
 class HoribaSpectrumProcedure(Procedure):
-    
-    data_filename = Parameter("Filename")
-    excitation_wavelength = FloatParameter("Excitation Wavelength", units='nm', default=532.0)
-    center_wavelength = FloatParameter("Center Wavelength", units='nm', default=545.0)
-    exposure = IntegerParameter("Exposure", units='s', default=1)
-    grating = ListParameter("Grating", choices=list(GRATING_CHOICES.keys()), default='Third (150 grooves/mm)')
-    slit_position = FloatParameter("Slit position", units='mm', default=0.1)
-    gain = ListParameter("Gain", choices=list(GAIN_CHOICES.keys()), default='High Light')
-    speed = ListParameter("Speed", choices=list(SPEED_CHOICES.keys()), default='50 kHz')
+    excitation_wavelength = FloatParameter("Excitation Wavelength", units="nm", default=532.0)
+    center_wavelength = FloatParameter("Center Wavelength", units="nm", default=545.0)
+    exposure = FloatParameter("Exposure", units="s", default=1)
+    slit_position = FloatParameter("Slit Position", units="mm", default=0.1)
+    gain = ListParameter("Gain", choices=GAIN_CHOICES.keys(), default='High Light')
+    speed = ListParameter("Speed", choices=SPEED_CHOICES.keys(), default='50 kHz')
+    grating = ListParameter("Grating", choices=GRATING_CHOICES.keys(), default='Third (150 grooves/mm)')
     rotation_angle = FloatParameter("Rotation Angle", units="deg", default=0)
-
-    DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
     
+    DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength"]
+
     def __init__(self):
         super().__init__()
-        self.controller = None 
-    
+        self.controller = None
+
     def enumconv(self, param_name: str, value: str):
+        """Convert GUI string values to SDK enum values"""
         logger.debug(f"Converting {param_name}: {value}")
         
         if param_name == 'grating':
             if value in GRATING_CHOICES:
-                enum_val = GRATING_CHOICES[value]  
+                enum_val = GRATING_CHOICES[value]
                 return enum_val.value
             logger.error(f"Invalid grating value: {value}")
             return None
@@ -81,6 +82,13 @@ class HoribaSpectrumProcedure(Procedure):
         return None
 
     def execute(self):
+        """Execute single measurement at current angle"""
+        logger.info(f"Measuring at rotation angle {self.rotation_angle}°")
+        
+        self.loop.run_until_complete(
+            self.controller.set_rotation_angle(self.rotation_angle)
+        )
+
         params = {
             'center_wavelength': self.center_wavelength,
             'exposure': self.exposure,
@@ -89,33 +97,27 @@ class HoribaSpectrumProcedure(Procedure):
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
         }
-
-        '''logger.info("Executing procedure with converted parameters:")
-        for k, v in params.items():
-            logger.info(f"  {k}: {v}")'''
-
-        try:
-            x_data, y_data = self.loop.run_until_complete(
-                self.controller.acquire_spectrum(**params)
-            )
-        except Exception as e:
-            logger.exception("acquire_spectrum failed")
-            raise
+        
+        x_data, y_data = self.loop.run_until_complete(
+            self.controller.acquire_spectrum(**params)
+        )
         
         if isinstance(x_data, list) and len(x_data) == 1:
             x_data = x_data[0]
         if isinstance(y_data, list) and len(y_data) == 1:
             y_data = y_data[0]
-
+        
         for x, y in zip(x_data, y_data):
             try:
                 wavenumber = (1.0 / self.excitation_wavelength - 1.0 / x) * 1e7
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to calculate wavenumber: {e}")
                 wavenumber = None
-            self.emit("results", {
-                "Wavelength": x,
+            
+            self.emit('results', {
                 "Wavenumber": wavenumber,
-                "Intensity": y
+                "Intensity": y,
+                "Wavelength": x
             })
 
     @property
