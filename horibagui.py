@@ -3,9 +3,7 @@ import sys
 import asyncio
 from loguru import logger
 from pymeasure.display.Qt import QtWidgets
-from PyQt5.QtWidgets import (QLabel, QSpinBox, QDoubleSpinBox, QHBoxLayout, 
-                            QPushButton, QGroupBox, QComboBox, QVBoxLayout)
-from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import (QLabel, QHBoxLayout, QGroupBox, QComboBox)
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from horibacontroller import HoribaController
@@ -72,17 +70,28 @@ class MainWindow(ManagedWindow):
     def queue(self, procedure=None):
         if procedure is None:
             procedure = self.make_procedure()
-        
-        filename = unique_filename(self.file_input.directory,
-                                 self.file_input.filename)
+
+        filename = self.unique_filename(self.file_input.directory, self.file_input.filename, procedure.rotation_angle)
         procedure.data_filename = filename
         
         experiment = self.new_experiment(Results(procedure, filename))
         self.manager.queue(experiment)
-        sleep(2)  
+        sleep(2)
+
+    def unique_filename(self, directory, base_filename, rotation_angle):
+        counter = 1
+        filename = f"{base_filename}_{counter}_{rotation_angle}.csv"
+        file_path = os.path.join(directory, filename)
+
+        while os.path.exists(file_path):
+            counter += 1
+            filename = f"{base_filename}_{counter}_{rotation_angle}.csv"
+            file_path = os.path.join(directory, filename)
+        
+        logger.info(f"Generated unique filename: {file_path}")
+        return file_path
 
     def closeEvent(self, event):
-        """Clean shutdown"""
         if not self.loop.is_closed():
             try:
                 self.loop.run_until_complete(self.controller.shutdown())

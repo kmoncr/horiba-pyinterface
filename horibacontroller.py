@@ -16,12 +16,9 @@ class HoribaController:
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
     ):
+
         if not enable_logging:
             logger.remove()
-
-        self._dm = DeviceManager(start_icl=True, enable_logging=enable_logging)
-        self.mono = None
-        self.ccd = None
 
         self.rotation_stage: OptoSigmaController | None = None
         self.enable_rotation_stage = enable_rotation_stage
@@ -33,39 +30,6 @@ class HoribaController:
                 logger.warning(
                     "Failed to connect rotation stage - continuing without it"
                 )
-
-    async def _ensure_initialized(self) -> bool:
-        try:
-            if not self._dm.is_started:
-                await self._dm.start()
-
-            monos = self._dm.monochromators
-            ccds = self._dm.charge_coupled_devices
-
-            if not monos or not ccds:
-                logger.critical("No monochromator or CCD found")
-                raise RuntimeError("No mono or CCD found")
-
-            self.mono = monos[0]
-            self.ccd = ccds[0]
-
-            if not await self.mono.is_open():
-                await self.mono.open()
-                await self._wait_for_mono(self.mono)
-
-            if not await self.mono.is_initialized():
-                await self.mono.initialize()
-                await self._wait_for_mono(self.mono)
-
-            if not await self.ccd.is_open():
-                await self.ccd.open()
-                await self._wait_for_ccd(self.ccd)
-
-            return True
-
-        except Exception as e:
-            logger.exception("Device initialization failed")
-            raise
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         logger.info("Starting acquisition with parameters:")
@@ -80,7 +44,8 @@ class HoribaController:
         speed = kwargs.get("speed", 2)
         rotation_angle = kwargs.get("rotation_angle", None)
 
-        await self._ensure_initialized()
+        dm = DeviceManager(start_icl=True)
+        await dm.start()
 
         if (
             rotation_angle is not None
@@ -93,90 +58,115 @@ class HoribaController:
             logger.info(f"Rotation stage set to {rotation_angle} degrees")
 
         try:
-            if grating is not None:
-                logger.debug(f"Setting grating to {grating}")
-                await self.mono.set_turret_grating(grating)
-                await self._wait_for_mono(self.mono)
+            monos = dm.monochromators
+            ccds = dm.charge_coupled_devices
+
+            if not monos or not ccds:
+                logger.critical("no monochromator or ccd found")
+                await dm.stop()
+                raise RuntimeError("no mono or ccd found")
+
+            mono = monos[0]
+            logger.debug("opening mono")
+            await mono.open()
+            await self._wait_for_mono(mono)
+
+            ccd = ccds[0]
+            logger.debug("opening ccd")
+            await ccd.open()
+            await self._wait_for_ccd(ccd)
+
+            if not await mono.is_initialized():
+                await mono.initialize()
+                logger.debug("initializing mono")
+                await self._wait_for_mono(mono)
+
+            '''current_grating = await mono.get_turret_grating()'''
+            logger.debug(f"Setting grating to {grating}")
+            await mono.set_turret_grating(grating)
+            await self._wait_for_mono(mono)
 
             logger.debug(f"Setting wavelength to {center_wavelength} nm")
-            await self.mono.move_to_target_wavelength(center_wavelength)
-            await self._wait_for_mono(self.mono)
+            await mono.move_to_target_wavelength(center_wavelength)
+            await self._wait_for_mono(mono)
 
             logger.debug(f"Setting slit position to {slit_position} mm")
-            await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
-            await self._wait_for_mono(self.mono)
+            await mono.set_slit_position(mono.Slit.A, slit_position)
+            await self._wait_for_mono(mono)
 
-            await self.mono.set_mirror_position(
-                self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL
+            await mono.set_mirror_position(
+                mono.Mirror.ENTRANCE, mono.MirrorPosition.AXIAL
             )
-            await self._wait_for_mono(self.mono)
+            logger.debug("mirror position set")
+            await self._wait_for_mono(mono)
 
-            mono_wavelength = await self.mono.get_current_wavelength()
+            mono_wavelength = await mono.get_current_wavelength()
             logger.info(f"Final wavelength position: {mono_wavelength:.3f} nm")
 
-            cfg = await self.ccd.get_configuration()
+            cfg = await ccd.get_configuration()
             chip_x = int(cfg["chipWidth"])
             chip_y = int(cfg["chipHeight"])
-            logger.debug(f"CCD dimensions: {chip_x=} {chip_y=}")
+            logger.debug(f"ccd dimensions: {chip_x=} {chip_y=}")
 
-            await self.ccd.set_acquisition_count(1)
-            await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
-            await self.ccd.set_exposure_time(int(exposure * 1000))
-            await self.ccd.set_gain(gain)
-            await self.ccd.set_speed(speed)
-            await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
-            await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            await self.ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
-            await self.ccd.set_x_axis_conversion_type(
+            logger.debug("Configuring CCD parameters")
+            await ccd.set_acquisition_count(1)
+            await ccd.set_center_wavelength(mono.id(), center_wavelength)
+            await ccd.set_exposure_time(int(exposure * 1000))
+            await ccd.set_gain(gain)
+            await ccd.set_speed(speed)
+            await ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
+            await ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
+            await ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
+            await ccd.set_x_axis_conversion_type(
                 XAxisConversionType.FROM_ICL_SETTINGS_INI
             )
 
-            ready = await self.ccd.get_acquisition_ready()
+            ready = await ccd.get_acquisition_ready()
             if not ready:
+                logger.error("CCD not ready for acquisition")
                 raise RuntimeError("CCD not ready for acquisition")
 
-            await self.ccd.acquisition_start(open_shutter=True)
-            await asyncio.sleep(0.2)
-            await self._wait_for_ccd(self.ccd)
+            logger.info("Starting acquisition...")
+            await ccd.acquisition_start(open_shutter=True)
+            await asyncio.sleep(1)
+            await self._wait_for_ccd(ccd)
 
-            raw = await self.ccd.get_acquisition_data()
+            raw = await ccd.get_acquisition_data()
             logger.success("Spectrum acquired successfully")
 
             x = raw[0]["roi"][0]["xData"]
             y = raw[0]["roi"][0]["yData"]
 
+            await ccd.close()
+            await asyncio.sleep(0.5)
+            await mono.close()
+            await dm.stop()
+
             return x, y
 
         except Exception as e:
             logger.exception("Failed to acquire spectrum")
+            try:
+                await dm.stop()
+            except:
+                pass
             raise
 
-    async def _wait_for_mono(self, mono: Monochromator, timeout: float = 30.0) -> None:
-        start_time = asyncio.get_event_loop().time()
-        while True:
+    async def _wait_for_mono(self, mono: Monochromator) -> None:
+        mono_busy = True
+        while mono_busy:
             mono_busy = await mono.is_busy()
-            if not mono_busy:
-                return
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                raise TimeoutError(
-                    f"Monochromator busy wait timed out after {timeout}s"
-                )
             await asyncio.sleep(1)
-            logger.debug("Mono busy...")
+            logger.info("Mono busy...")
 
-    async def _wait_for_ccd(
-        self, ccd: ChargeCoupledDevice, timeout: float = 30.0
-    ) -> None:
-        start_time = asyncio.get_event_loop().time()
-        while True:
+    async def _wait_for_ccd(self, ccd: ChargeCoupledDevice) -> None:
+        busy = True
+        while busy:
             busy = await ccd.get_acquisition_busy()
-            if not busy:
-                return
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                raise TimeoutError(f"CCD busy wait timed out after {timeout}s")
             await asyncio.sleep(0.1)
 
     async def set_rotation_angle(self, value: float) -> None:
+        """Set rotation stage angle"""
         if not self.enable_rotation_stage or self.rotation_stage is None:
             logger.error("Rotation stage not enabled")
             return
@@ -186,6 +176,7 @@ class HoribaController:
         self.rotation_stage.degree = value
 
     async def get_rotation_angle(self) -> float:
+        """Get current rotation stage angle"""
         if not self.enable_rotation_stage or self.rotation_stage is None:
             return 0.0
         if not self.rotation_stage.is_connected:
@@ -193,6 +184,7 @@ class HoribaController:
         return self.rotation_stage.degree
 
     async def return_rotation_to_origin(self) -> None:
+        """Return rotation stage to origin"""
         if not self.enable_rotation_stage or self.rotation_stage is None:
             logger.error("Rotation stage not enabled")
             return
@@ -202,21 +194,10 @@ class HoribaController:
         self.rotation_stage.return_to_origin()
 
     async def shutdown(self) -> None:
-        try:
-            if self.ccd:
-                await self.ccd.close()
-            if self.mono:
-                await self.mono.close()
-            await self._dm.stop()
-
-            if self.enable_rotation_stage and self.rotation_stage:
-                logger.info("Disconnecting rotation stage")
-                try:
-                    self.rotation_stage.disconnect()
-                except Exception as e:
-                    logger.error(f"Error disconnecting rotation stage: {e}")
-
-            logger.success("Shutdown complete")
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-            raise
+        logger.info("disconnecting rotation stage")
+        if self.enable_rotation_stage and self.rotation_stage:
+            try:
+                self.rotation_stage.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting rotation stage: {e}")
+        logger.success("shutdown complete")
