@@ -49,6 +49,10 @@ class HoribaController:
         gain = kwargs.get("gain", 0)
         speed = kwargs.get("speed", 2)
         rotation_angle = kwargs.get("rotation_angle", None)
+        x_size = kwargs.get("ccd_x_size")
+        y_size = kwargs.get("ccd_y_size")
+        x_bin = kwargs.get("ccd_x_bin")
+        y_bin = kwargs.get("ccd_y_bin")
 
         dm = DeviceManager(start_icl=True)
         await dm.start()
@@ -125,7 +129,8 @@ class HoribaController:
             await ccd.set_speed(speed)
             await ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
             await ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            await ccd.set_region_of_interest(1, 0, 0, chip_x, chip_y, 1, chip_y)
+            await ccd.set_region_of_interest(1, 0, 0, x_size, y_size, x_bin, y_bin)
+            logger.debug("region of interest:", x_size, y_size, x_bin, y_bin)
             await ccd.set_x_axis_conversion_type(
                 XAxisConversionType.FROM_ICL_SETTINGS_INI
             )

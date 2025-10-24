@@ -56,6 +56,10 @@ class HoribaSpectrumProcedure(Procedure):
     grating = ListParameter("Grating", choices=GRATING_CHOICES.keys(), default='Third (150 grooves/mm)')
     rotation_angle = FloatParameter("Rotation Angle", units="deg") 
     scan_number = IntegerParameter("Scan Number", default=1, minimum=1)
+    ccd_x_size = IntegerParameter("CCD X Size", units="px", default= 1024, minimum=0)
+    ccd_y_size = IntegerParameter("CCD Y Size", units="px", default= 256, minimum=0)
+    ccd_x_bin = IntegerParameter("CCD X Bin", units="px", default= 1, minimum=1)
+    ccd_y_bin = IntegerParameter("CCD Y Bin", units="px", default= 256, minimum=0)
     
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength", "Scan Number"]
 
@@ -105,7 +109,11 @@ class HoribaSpectrumProcedure(Procedure):
             'slit_position': self.slit_position,
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
-            'rotation_angle': self.rotation_angle
+            'rotation_angle': self.rotation_angle,
+            'ccd_x_size': self.ccd_x_size,
+            'ccd_y_size': self.ccd_y_size,
+            'ccd_x_bin': self.ccd_x_bin,
+            'ccd_y_bin': self.ccd_y_bin
         }
         
         # Perform the single scan
