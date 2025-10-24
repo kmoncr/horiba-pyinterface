@@ -22,10 +22,16 @@ class HoribaController:
 
         self.rotation_stage: OptoSigmaController | None = None
         self.enable_rotation_stage = enable_rotation_stage
+        self.last_angle = 0.0  # Remember the last angle
         if enable_rotation_stage:
             self.rotation_stage = OptoSigmaController(port=rotation_stage_port)
             if self.rotation_stage.connect():
                 logger.info("Rotation stage connected")
+                try:
+                    self.last_angle = self.rotation_stage.degree
+                    logger.info(f"Initial rotation angle: {self.last_angle}")
+                except Exception as e:
+                    logger.warning(f"Could not read initial angle: {e}")
             else:
                 logger.warning(
                     "Failed to connect rotation stage - continuing without it"
@@ -53,9 +59,12 @@ class HoribaController:
             and self.rotation_stage
             and self.rotation_stage.is_connected
         ):
-            logger.debug(f"Setting rotation to {rotation_angle} degrees")
-            self.rotation_stage.degree = rotation_angle
-            logger.info(f"Rotation stage set to {rotation_angle} degrees")
+            # This block mainly ensures we log the angle being used.
+            self.last_angle = rotation_angle
+            logger.info(f"Rotation angle used for this measurement: {rotation_angle} degrees")
+        elif rotation_angle is None:
+             logger.info(f"No rotation angle passed to acquisition, using last known angle: {self.last_angle}")
+             # No stage movement here, assume it's set correctly by the procedure
 
         try:
             monos = dm.monochromators
@@ -174,14 +183,23 @@ class HoribaController:
             logger.error("Rotation stage not connected")
             return
         self.rotation_stage.degree = value
+        self.last_angle = value # Update last angle
+        logger.info(f"Rotation stage set to {value} degrees")
+
 
     async def get_rotation_angle(self) -> float:
         """Get current rotation stage angle"""
         if not self.enable_rotation_stage or self.rotation_stage is None:
-            return 0.0
+            return self.last_angle
         if not self.rotation_stage.is_connected:
-            return 0.0
-        return self.rotation_stage.degree
+            return self.last_angle
+        
+        try:
+            self.last_angle = self.rotation_stage.degree
+        except Exception as e:
+            logger.error(f"Failed to read rotation angle: {e}")
+            
+        return self.last_angle
 
     async def return_rotation_to_origin(self) -> None:
         """Return rotation stage to origin"""
@@ -192,6 +210,9 @@ class HoribaController:
             logger.error("Rotation stage not connected")
             return
         self.rotation_stage.return_to_origin()
+        self.last_angle = 0.0 # Update last angle
+        logger.info("Rotation stage returned to origin.")
+
 
     async def shutdown(self) -> None:
         logger.info("disconnecting rotation stage")
