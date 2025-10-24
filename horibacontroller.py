@@ -52,7 +52,6 @@ class HoribaController:
         x_size = kwargs.get("ccd_x_size")
         y_size = kwargs.get("ccd_y_size")
         x_bin = kwargs.get("ccd_x_bin")
-        y_bin = kwargs.get("ccd_y_bin")
 
         dm = DeviceManager(start_icl=True)
         await dm.start()
@@ -129,8 +128,8 @@ class HoribaController:
             await ccd.set_speed(speed)
             await ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
             await ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            await ccd.set_region_of_interest(1, 0, 0, x_size, y_size, x_bin, y_bin)
-            logger.debug("region of interest:", x_size, y_size, x_bin, y_bin)
+            logger.info(f"Setting ROI to (0,0,{x_size},{y_size}) with binning ({x_bin},{y_size})")
+            await ccd.set_region_of_interest(1, 0, 0, int(x_size), int(y_size), int(x_bin), int(y_size))
             await ccd.set_x_axis_conversion_type(
                 XAxisConversionType.FROM_ICL_SETTINGS_INI
             )

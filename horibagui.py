@@ -21,12 +21,12 @@ class MainWindow(ManagedWindow):
             inputs=[
                 'excitation_wavelength', 'center_wavelength', 'exposure',
                 'slit_position', 'gain', 'speed', 'grating', 'rotation_angle',
-                'ccd_x_size', 'ccd_y_size', 'ccd_x_bin', 'ccd_y_bin'
+                'ccd_x_size', 'ccd_y_size', 'ccd_x_bin'
             ],
             displays=[
                 'excitation_wavelength', 'center_wavelength', 'exposure',
                 'slit_position', 'gain', 'speed', 'grating', 'rotation_angle',
-                'ccd_x_size', 'ccd_y_size', 'ccd_x_bin', 'ccd_y_bin'
+                'ccd_x_size', 'ccd_y_size', 'ccd_x_bin'
             ],
             x_axis='Wavelength',
             y_axis='Intensity',
@@ -170,7 +170,7 @@ class MainWindow(ManagedWindow):
         param_names = [
             "excitation_wavelength", "center_wavelength", "exposure",
             "slit_position", "gain", "speed", "rotation_angle",
-            "ccd_x_size", "ccd_y_size", "ccd_x_bin", "ccd_y_bin"
+            "ccd_x_size", "ccd_y_size", "ccd_x_bin"
         ]
         
         for param_name in param_names:
