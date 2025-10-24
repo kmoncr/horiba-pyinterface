@@ -3,7 +3,8 @@ from pymeasure.experiment import (
 )
 from enum import Enum
 from horiba_sdk.devices.single_devices import Monochromator
-from loguru import logger  
+from loguru import logger
+import asyncio
 
 class GratingEnum(Enum):
     FIRST = Monochromator.Grating.FIRST
@@ -36,8 +37,8 @@ class Speed(Enum):
 
 SPEED_CHOICES = {
     '50 kHz': Speed.FIRST, 
-    '1 mHz': Speed.SECOND, 
-    '3 mHz': Speed.THIRD
+    '1 MHz': Speed.SECOND, 
+    '3 MHz': Speed.THIRD
 }
 
 PARAM_MAP = {
@@ -50,24 +51,18 @@ class HoribaSpectrumProcedure(Procedure):
     center_wavelength = FloatParameter("Center Wavelength", units="nm", default=545.0)
     exposure = FloatParameter("Exposure", units="s", default=1)
     slit_position = FloatParameter("Slit Position", units="mm", default=0.1)
-    # Changed default gain
     gain = ListParameter("Gain", choices=GAIN_CHOICES.keys(), default='Best Dynamic Range')
     speed = ListParameter("Speed", choices=SPEED_CHOICES.keys(), default='50 kHz')
     grating = ListParameter("Grating", choices=GRATING_CHOICES.keys(), default='Third (150 grooves/mm)')
-    # Rotation angle is set by the sequencer or manual input
     rotation_angle = FloatParameter("Rotation Angle", units="deg") 
-    
-    # New parameter to track which scan this is (set by the GUI's queue method)
     scan_number = IntegerParameter("Scan Number", default=1, minimum=1)
-
-    # Removed scans_per_angle. Looping moved to GUI.
     
     DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength", "Scan Number"]
 
     def __init__(self):
         super().__init__()
         self.controller = None
-        self.loop = None # Ensure loop is initialized
+        self.loop = None
 
     def enumconv(self, param_name: str, value: str):
         """Convert GUI string values to SDK enum values"""
@@ -89,12 +84,17 @@ class HoribaSpectrumProcedure(Procedure):
         logger.error(f"Unknown parameter or value: {param_name}={value}")
         return None
 
+    def run_async(self, coro):
+        """Helper to run async coroutines from the worker thread"""
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result()  # Block until complete
+
     def execute(self):
         """Execute a single measurement (one scan) at the current angle."""
         logger.info(f"Setting rotation angle to {self.rotation_angle}° for Scan {self.scan_number}")
         
         # Set the rotation angle once at the beginning of the procedure
-        self.loop.run_until_complete(
+        self.run_async(
             self.controller.set_rotation_angle(self.rotation_angle)
         )
 
@@ -105,13 +105,13 @@ class HoribaSpectrumProcedure(Procedure):
             'slit_position': self.slit_position,
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
-            'rotation_angle': self.rotation_angle # Pass angle to acquire_spectrum
+            'rotation_angle': self.rotation_angle
         }
         
         # Perform the single scan
         logger.info(f"Starting acquisition for Scan {self.scan_number} at angle {self.rotation_angle}°")
         
-        x_data, y_data = self.loop.run_until_complete(
+        x_data, y_data = self.run_async(
             self.controller.acquire_spectrum(**params)
         )
         
@@ -131,7 +131,7 @@ class HoribaSpectrumProcedure(Procedure):
                 "Wavenumber": wavenumber,
                 "Intensity": y,
                 "Wavelength": x,
-                "Scan Number": self.scan_number # Use the procedure's scan_number
+                "Scan Number": self.scan_number
             })
         
         logger.success(f"Completed Scan {self.scan_number} at angle {self.rotation_angle}°")
@@ -139,7 +139,6 @@ class HoribaSpectrumProcedure(Procedure):
         # Check for shutdown request after the scan
         if self.should_stop():
             logger.warning(f"Stop requested after scan {self.scan_number}. Stopping.")
-
 
     @property
     def procedure(self):

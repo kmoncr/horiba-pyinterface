@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import threading
 from loguru import logger
 from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
@@ -32,8 +33,11 @@ class MainWindow(ManagedWindow):
         )
         self.setWindowTitle('Horiba Spectrum Scan')
 
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+        # Start event loop in background thread
+        self.loop = None
+        self.loop_thread = None
+        self._start_event_loop()
+        
         self.controller = HoribaController(enable_logging=True)
         
         # Set default rotation angle in GUI to last known angle
@@ -95,7 +99,7 @@ class MainWindow(ManagedWindow):
 
         # Add widgets to main layout
         self.inputs.layout().addWidget(grating_widget)
-        self.inputs.layout().addWidget(scan_count_widget) # Added the scan count control
+        self.inputs.layout().addWidget(scan_count_widget)
         self.inputs.layout().addWidget(rotation_widget)
 
         self.file_input.extensions = ['csv']
@@ -103,18 +107,25 @@ class MainWindow(ManagedWindow):
         # Get initial angle
         self.update_current_angle()
 
-    def run_async_task(self, task):
+    def _start_event_loop(self):
+        """Start the asyncio event loop in a separate daemon thread"""
+        def run_loop(loop):
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+        
+        self.loop = asyncio.new_event_loop()
+        self.loop_thread = threading.Thread(target=run_loop, args=(self.loop,), daemon=True)
+        self.loop_thread.start()
+        logger.info("Event loop started in background thread")
+
+    def run_async_task(self, task, timeout=30):
         """Helper to run async tasks from sync GUI methods"""
         try:
-            # Check if loop is running
-            if self.loop.is_running():
-                # Schedule task if loop is already running (e.g., during experiment)
-                asyncio.run_coroutine_threadsafe(task, self.loop)
-            else:
-                # Run task to completion if loop is not running
-                self.loop.run_until_complete(task)
+            future = asyncio.run_coroutine_threadsafe(task, self.loop)
+            return future.result(timeout=timeout)
         except Exception as e:
             logger.error(f"Error running async task: {e}")
+            raise
 
     def update_current_angle(self):
         """Get angle from controller and update GUI label"""
@@ -122,8 +133,8 @@ class MainWindow(ManagedWindow):
         async def _get_angle():
             angle = await self.controller.get_rotation_angle()
             self.current_angle_display.setText(f"Current Angle: {angle:.2f}°")
-            self.set_angle_input.setValue(angle) # Update manual input box
-            self.inputs.rotation_angle.setValue(angle) # Update procedure input
+            self.set_angle_input.setValue(angle)
+            self.inputs.rotation_angle.setValue(angle)
             logger.info(f"GUI updated with angle: {angle:.2f}°")
         
         self.run_async_task(_get_angle())
@@ -133,9 +144,9 @@ class MainWindow(ManagedWindow):
         target_angle = self.set_angle_input.value()
         logger.info(f"GUI: Setting angle to {target_angle}°")
         self.run_async_task(self.controller.set_rotation_angle(target_angle))
-        # We optimistically update the display. update_current_angle() can confirm.
+        # Optimistically update the display
         self.current_angle_display.setText(f"Current Angle: {target_angle:.2f}°")
-        self.inputs.rotation_angle.setValue(target_angle) # Update procedure input
+        self.inputs.rotation_angle.setValue(target_angle)
 
     def do_return_to_origin(self):
         """Tell controller to return to origin"""
@@ -143,8 +154,7 @@ class MainWindow(ManagedWindow):
         self.run_async_task(self.controller.return_rotation_to_origin())
         self.current_angle_display.setText("Current Angle: 0.00°")
         self.set_angle_input.setValue(0.0)
-        self.inputs.rotation_angle.setValue(0.0) # Update procedure input
-
+        self.inputs.rotation_angle.setValue(0.0)
 
     def update_grating(self, text):
         logger.info(f"GUI: Grating changed to {text}")
@@ -191,28 +201,29 @@ class MainWindow(ManagedWindow):
         # Loop to queue multiple experiments
         for i in range(1, scans_per_angle + 1):
             
-            # Create a new, unique procedure instance for each scan, forcing the sequenced angle
+            # Create a new, unique procedure instance for each scan
             current_procedure = self.make_procedure(rotation_angle=base_rotation_angle)
+            current_procedure.scan_number = i  # Set scan number
             
             # Generate a unique filename including both angle and scan number
             filename = self.unique_filename(
                 self.file_input.directory, 
                 self.file_input.filename, 
                 current_procedure.rotation_angle, 
-                i # Pass scan number for unique filename
+                i
             )
             current_procedure.data_filename = filename
             
             experiment = self.new_experiment(Results(current_procedure, filename))
             self.manager.queue(experiment)
         
-        # Remember last angle in GUI inputs (only need to do this once per angle step)
+        # Remember last angle in GUI inputs
         self.inputs.rotation_angle.setValue(base_rotation_angle)
         
         # Update current angle display
         self.update_current_angle()
         
-        sleep(2) # Original sleep
+        sleep(2)
 
     def unique_filename(self, directory, base_filename, rotation_angle, scan_number):
         """Generates a unique filename using 0.0deg format and scan number."""
@@ -224,7 +235,7 @@ class MainWindow(ManagedWindow):
         filename = f"{base_filename}_{angle_str}_S{scan_number}_{counter}.csv"
         file_path = os.path.join(directory, filename)
 
-        # Ensure filename is globally unique (in case same angle/scan number is used multiple times)
+        # Ensure filename is globally unique
         while os.path.exists(file_path):
             counter += 1
             filename = f"{base_filename}_{angle_str}_S{scan_number}_{counter}.csv"
@@ -234,13 +245,23 @@ class MainWindow(ManagedWindow):
         return file_path
 
     def closeEvent(self, event):
-        if not self.loop.is_closed():
-            try:
-                self.loop.run_until_complete(self.controller.shutdown())
-            except Exception as e:
-                logger.error(f"Error during shutdown: {e}")
-            finally:
-                self.loop.close()
+        logger.info("Closing application...")
+        try:
+            # Shutdown controller
+            future = asyncio.run_coroutine_threadsafe(
+                self.controller.shutdown(), 
+                self.loop
+            )
+            future.result(timeout=5)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        finally:
+            # Stop event loop
+            if self.loop and not self.loop.is_closed():
+                self.loop.call_soon_threadsafe(self.loop.stop)
+                if self.loop_thread:
+                    self.loop_thread.join(timeout=2)
+        
         event.accept()
 
 if __name__ == "__main__":
