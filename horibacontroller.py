@@ -49,7 +49,7 @@ class HoribaController:
         gain = kwargs.get("gain", 0)
         speed = kwargs.get("speed", 2)
         rotation_angle = kwargs.get("rotation_angle", None)
-        x_size = kwargs.get("ccd_x_size")
+        y_origin = kwargs.get("ccd_y_origin")
         y_size = kwargs.get("ccd_y_size")
         x_bin = kwargs.get("ccd_x_bin")
 
@@ -62,12 +62,10 @@ class HoribaController:
             and self.rotation_stage
             and self.rotation_stage.is_connected
         ):
-            # This block mainly ensures we log the angle being used.
             self.last_angle = rotation_angle
             logger.info(f"Rotation angle used for this measurement: {rotation_angle} degrees")
         elif rotation_angle is None:
              logger.info(f"No rotation angle passed to acquisition, using last known angle: {self.last_angle}")
-             # No stage movement here, assume it's set correctly by the procedure
 
         try:
             monos = dm.monochromators
@@ -128,8 +126,8 @@ class HoribaController:
             await ccd.set_speed(speed)
             await ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
             await ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            logger.info(f"Setting ROI to (0,0,{x_size},{y_size}) with binning ({x_bin},{y_size})")
-            await ccd.set_region_of_interest(1, 0, 0, int(x_size), int(y_size), int(x_bin), int(y_size))
+            logger.debug(f"Setting ROI to (0,{y_origin},chip_x,{y_size}) with binning ({x_bin},{y_size})")
+            await ccd.set_region_of_interest(1, 0, int(y_origin), chip_x, int(y_size), int(x_bin), int(y_size))
             await ccd.set_x_axis_conversion_type(
                 XAxisConversionType.FROM_ICL_SETTINGS_INI
             )
