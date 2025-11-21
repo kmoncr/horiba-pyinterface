@@ -90,7 +90,7 @@ class LiveViewWindow(QWidget):
         self.center_wavelength.setMinimum(0)
         self.center_wavelength.setMaximum(2000)
         self.center_wavelength.setDecimals(1)
-        self.center_wavelength.setValue(545.0)  # Set default value
+        self.center_wavelength.setValue(545.0)  
         self.center_wavelength.setSuffix(" nm")
 
         self.exposure = QDoubleSpinBox()
@@ -138,6 +138,7 @@ class LiveViewWindow(QWidget):
         self.ccd_y_size.setValue(256)  
         self.ccd_y_size.setMinimum(1)
         self.ccd_y_size.setMaximum(256) 
+        self.ccd_y_size.setValue(256)
 
         self.ccd_y_bin = QSpinBox()
         self.ccd_y_bin.setValue(256) 
@@ -225,7 +226,7 @@ class LiveViewWindow(QWidget):
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
             'rotation_angle': self.rotation_angle.value(),
-            'ccd_y_origin': self.ccd_y_origin.value(),  # ADDED
+            'ccd_y_origin': self.ccd_y_origin.value(), 
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
         }
