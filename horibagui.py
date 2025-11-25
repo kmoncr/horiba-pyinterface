@@ -40,6 +40,7 @@ class MainWindow(ManagedWindow):
         self._start_event_loop()
         
         self.controller = HoribaController(enable_logging=True)
+        self.run_async_task(self.controller.connect_hardware())
         
         self.inputs.rotation_angle.setValue(self.controller.last_angle) 
 
@@ -178,7 +179,7 @@ class MainWindow(ManagedWindow):
         for i in range(1, scans_per_angle + 1):
             
             current_procedure = self.make_procedure(rotation_angle=base_rotation_angle)
-            current_procedure.scan_number = i  # Set scan number
+            current_procedure.scan_number = i 
             
             filename = self.unique_filename(
                 self.file_input.directory, 

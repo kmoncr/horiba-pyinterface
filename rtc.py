@@ -35,10 +35,16 @@ class LiveViewWindow(QWidget):
         self.loop = None
         self.loop_thread = None
         self._start_event_loop()
+
+        logger.info("starting hardware connection...")
+        try:
+            self.run_async_task(self.controller.connect_hardware(), timeout=60)
+        except Exception as e:
+            logger.error(f"Failed to initialize hardware on startup: {e}")
         
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.is_scanning = False  # Track scanning state
+        self.is_scanning = False  
         
         self.setWindowTitle("Horiba RTC")
         self.setGeometry(100, 100, 1200, 700)
@@ -90,7 +96,7 @@ class LiveViewWindow(QWidget):
         self.center_wavelength.setMinimum(0)
         self.center_wavelength.setMaximum(2000)
         self.center_wavelength.setDecimals(1)
-        self.center_wavelength.setValue(545.0)  
+        self.center_wavelength.setValue(545.0) 
         self.center_wavelength.setSuffix(" nm")
 
         self.exposure = QDoubleSpinBox()
@@ -138,7 +144,6 @@ class LiveViewWindow(QWidget):
         self.ccd_y_size.setValue(256)  
         self.ccd_y_size.setMinimum(1)
         self.ccd_y_size.setMaximum(256) 
-        self.ccd_y_size.setValue(256)
 
         self.ccd_y_bin = QSpinBox()
         self.ccd_y_bin.setValue(256) 
@@ -226,7 +231,7 @@ class LiveViewWindow(QWidget):
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
             'rotation_angle': self.rotation_angle.value(),
-            'ccd_y_origin': self.ccd_y_origin.value(), 
+            'ccd_y_origin': self.ccd_y_origin.value(),  # ADDED
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
         }
@@ -246,7 +251,6 @@ class LiveViewWindow(QWidget):
             logger.error(f"Failed to set angle: {e}")
 
     def start_scan(self):
-        # FIXED: Prevent multiple simultaneous scans
         if self.is_scanning:
             logger.warning("Scan already running. Please stop current scan first.")
             return
@@ -258,7 +262,7 @@ class LiveViewWindow(QWidget):
             return
             
         self.stop_event.clear()
-        self.is_scanning = True  # Set scanning flag
+        self.is_scanning = True 
         self.worker_thread = threading.Thread(
             target=self._scan_loop, 
             args=(params,), 
@@ -274,9 +278,9 @@ class LiveViewWindow(QWidget):
         logger.info("Stop requested by user.")
         self.stop_event.set()
         if self.worker_thread and self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=5.0)  # Increased timeout
+            self.worker_thread.join(timeout=5.0)
         
-        self.is_scanning = False  # Clear scanning flag
+        self.is_scanning = False  
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         logger.info("Live scan stopped.")
@@ -301,7 +305,7 @@ class LiveViewWindow(QWidget):
                 
                 x, y = self.run_async_task(
                     self.controller.acquire_spectrum(**params),
-                    timeout=60  # Increased timeout for acquisition
+                    timeout=60 
                 )
                 
                 if isinstance(x, list) and len(x) == 1:
@@ -316,7 +320,6 @@ class LiveViewWindow(QWidget):
                 elapsed = time.time() - start_time
                 logger.debug(f"Acquisition took {elapsed:.2f}s")
                 
-                # Small delay between acquisitions
                 if elapsed < 0.1:
                     time.sleep(0.1)
                         
@@ -327,7 +330,6 @@ class LiveViewWindow(QWidget):
                 break
         
         logger.info(f"Scan loop finishing after {acquisition_count} acquisitions.")
-        # Ensure UI is updated
         QtCore.QTimer.singleShot(0, self.stop_scan)
 
     @QtCore.pyqtSlot(str)
