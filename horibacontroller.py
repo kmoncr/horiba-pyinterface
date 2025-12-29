@@ -52,7 +52,6 @@ class HoribaController:
 
         logger.info("Initializing Horiba Hardware Connection...")
 
-        # FIX: Ensure we don't leave a zombie DeviceManager if we are reconnecting
         if self.dm:
             try:
                 await self.dm.stop()
@@ -164,16 +163,14 @@ class HoribaController:
         except Exception as e:
             logger.exception("Failed to acquire spectrum - Connection might be lost")
             
-            # FIX: Mark as disconnected to force reconnection next time
             self.is_connected = False 
             
-            # FIX: Attempt to clean up the potentially broken device manager
             try:
                 if self.dm:
                     await self.dm.stop()
             except:
                 pass
-            self.dm = None # Good practice to clear the reference
+            self.dm = None 
             
             raise
 
