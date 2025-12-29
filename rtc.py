@@ -9,7 +9,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
-    QCheckBox
+    QCheckBox, QMessageBox
 )
 import pyqtgraph as pg
 import numpy as np
@@ -28,22 +28,23 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
-    scan_error = QtCore.pyqtSignal(str)  
+    scan_error = QtCore.pyqtSignal(str)
+    connection_success = QtCore.pyqtSignal() 
 
     def __init__(self):
         super().__init__()
         
-        self.controller = HoribaController(enable_logging=True)
+        self.controller = None
+        
         self.loop = None
         self.loop_thread = None
         self._start_event_loop()
 
-        logger.info("starting hardware connection...")
-        try:
-            self.run_async_task(self.controller.connect_hardware(), timeout=60)
-        except Exception as e:
-            logger.error(f"Failed to initialize hardware on startup: {e}")
+        self.setup_ui()
         
+        logger.info("Starting hardware connection in background...")
+        threading.Thread(target=self._startup_routine, daemon=True).start()
+
         self.worker_thread = None
         self.stop_event = threading.Event()
         self.is_scanning = False  
@@ -51,11 +52,17 @@ class LiveViewWindow(QWidget):
         self.latest_wavelength = None
         self.latest_intensity = None
         
+        self.data_ready.connect(self.update_plot)
+        self.scan_error.connect(self.handle_scan_error)
+        self.connection_success.connect(self.on_connection_success) 
+        
+        logger.info("RTC GUI initialized.")
+
+    def setup_ui(self):
         self.setWindowTitle("Horiba RTC")
         self.setGeometry(100, 100, 1200, 700)
         
         main_layout = QHBoxLayout()
-        
         controls_layout = QVBoxLayout()
         controls_layout.setSpacing(15)
         
@@ -73,6 +80,7 @@ class LiveViewWindow(QWidget):
         self.start_button = QPushButton("START")
         self.start_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.start_button.clicked.connect(self.start_scan)
+        self.start_button.setEnabled(False) 
         
         self.stop_button = QPushButton("STOP")
         self.stop_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
@@ -86,12 +94,10 @@ class LiveViewWindow(QWidget):
 
         plot_options_box = QGroupBox("Plot Options")
         plot_options_layout = QFormLayout()
-        
         self.wavenumber_checkbox = QCheckBox()
         self.wavenumber_checkbox.setChecked(False)
         self.wavenumber_checkbox.stateChanged.connect(self.toggle_x_axis)
         plot_options_layout.addRow("Plot in Wavenumber (cm⁻¹):", self.wavenumber_checkbox)
-        
         plot_options_box.setLayout(plot_options_layout)
         controls_layout.addWidget(plot_options_box)
 
@@ -99,34 +105,24 @@ class LiveViewWindow(QWidget):
         spec_layout = QFormLayout()
 
         self.excitation_wavelength = QDoubleSpinBox()
-        self.excitation_wavelength.setMinimum(0)
-        self.excitation_wavelength.setMaximum(2000)
-        self.excitation_wavelength.setDecimals(1)
+        self.excitation_wavelength.setRange(0, 2000)
         self.excitation_wavelength.setValue(532.0)
         self.excitation_wavelength.setSuffix(" nm")
-
         spec_layout.addRow("Excitation Wavelength:", self.excitation_wavelength)
 
-        
         self.center_wavelength = QDoubleSpinBox()
-        self.center_wavelength.setMinimum(0)
-        self.center_wavelength.setMaximum(2000)
-        self.center_wavelength.setDecimals(1)
+        self.center_wavelength.setRange(0, 2000)
         self.center_wavelength.setValue(545.0) 
         self.center_wavelength.setSuffix(" nm")
 
         self.exposure = QDoubleSpinBox()
+        self.exposure.setRange(0.01, 60)
         self.exposure.setValue(1.0)
-        self.exposure.setMinimum(0.01)
-        self.exposure.setMaximum(60)
-        self.exposure.setDecimals(2)
         self.exposure.setSuffix(" s")
 
         self.slit_position = QDoubleSpinBox()
+        self.slit_position.setRange(0, 10)
         self.slit_position.setValue(0.1)
-        self.slit_position.setMinimum(0)
-        self.slit_position.setMaximum(10)
-        self.slit_position.setDecimals(2)
         self.slit_position.setSuffix(" mm")
 
         self.grating_combo = QComboBox()
@@ -152,26 +148,22 @@ class LiveViewWindow(QWidget):
         self.speed_combo.setCurrentText('50 kHz')  
         
         self.ccd_y_origin = QSpinBox()
-        self.ccd_y_origin.setValue(0)  
-        self.ccd_y_origin.setMinimum(0)
-        self.ccd_y_origin.setMaximum(256)
+        self.ccd_y_origin.setRange(0, 256)
+        self.ccd_y_origin.setValue(0)
         
         self.ccd_y_size = QSpinBox()
-        self.ccd_y_size.setValue(256)  
-        self.ccd_y_size.setMinimum(1)
-        self.ccd_y_size.setMaximum(256) 
+        self.ccd_y_size.setRange(1, 256)
+        self.ccd_y_size.setValue(256)
 
         self.ccd_x_bin = QSpinBox()
-        self.ccd_x_bin.setValue(1) 
-        self.ccd_x_bin.setMinimum(1)
-        self.ccd_x_bin.setMaximum(1024)
+        self.ccd_x_bin.setRange(1, 1024)
+        self.ccd_x_bin.setValue(1)
         
         ccd_layout.addRow("Gain:", self.gain_combo)
         ccd_layout.addRow("Speed:", self.speed_combo)
         ccd_layout.addRow("CCD Y Origin (px):", self.ccd_y_origin) 
         ccd_layout.addRow("CCD Y Size (px):", self.ccd_y_size)
         ccd_layout.addRow("CCD X Bin (px):", self.ccd_x_bin)
-        
         ccd_box.setLayout(ccd_layout)
         controls_layout.addWidget(ccd_box)
 
@@ -179,10 +171,8 @@ class LiveViewWindow(QWidget):
         rot_layout = QFormLayout()
         
         self.rotation_angle = QDoubleSpinBox()
-        self.rotation_angle.setValue(self.controller.last_angle)
-        self.rotation_angle.setMinimum(-360)
-        self.rotation_angle.setMaximum(360)
-        self.rotation_angle.setDecimals(2)
+        self.rotation_angle.setValue(0.0)
+        self.rotation_angle.setRange(-360, 360)
         self.rotation_angle.setSuffix(" deg")
         
         self.set_angle_button = QPushButton("Go to Angle")
@@ -200,15 +190,41 @@ class LiveViewWindow(QWidget):
         main_layout.addWidget(control_widget, 1)
         main_layout.addWidget(plot_widget, 3)    
         self.setLayout(main_layout)
+
+    def _startup_routine(self):
+        """Run initialization inside the async loop context"""
+        async def async_init():
+            try:
+                logger.info("instantiating controller on background thread...")
+                self.controller = HoribaController(enable_logging=True)
+                
+                # Connect
+                logger.info("connecting to hardware...")
+                await self.controller.connect_hardware()
+                
+                return True
+            except Exception as e:
+                logger.error(f"init failed: {e}")
+                self.scan_error.emit(f"init failed; check if icl is running. Error: {e}")
+                return False
+
+        success = self.run_async_task(async_init(), timeout=60)
         
-        self.data_ready.connect(self.update_plot)
-        self.scan_error.connect(self.handle_scan_error)
-        logger.info("RTC GUI initialized.")
+        if success:
+            logger.success("Hardware connected successfully.")
+            self.connection_success.emit()
+
+    @QtCore.pyqtSlot()
+    def on_connection_success(self):
+        """Called on main thread after hardware connects"""
+        self.start_button.setEnabled(True)
+        if self.controller:
+            try:
+                self.rotation_angle.setValue(self.controller.last_angle)
+            except:
+                pass
 
     def wavelength_to_wavenumber(self, wavelength_nm):
-        """
-        wavenumber = (1/λ_excitation - 1/λ_scattered) * 10^7
-        """
         excitation = self.excitation_wavelength.value()
         try:
             wavenumber = (1.0 / excitation - 1.0 / wavelength_nm) * 1e7
@@ -269,8 +285,10 @@ class LiveViewWindow(QWidget):
         return params
 
     def go_to_angle(self):
+        if not self.controller:
+            return
         if self.is_scanning:
-            logger.warning("Cannot move stage while scan is active. Stop scan first.")
+            logger.warning("Cannot move stage while scan is active.")
             return
         
         angle = self.rotation_angle.value()
@@ -282,8 +300,10 @@ class LiveViewWindow(QWidget):
             logger.error(f"Failed to set angle: {e}")
 
     def start_scan(self):
+        if not self.controller:
+            logger.error("Controller not initialized")
+            return
         if self.is_scanning:
-            logger.warning("Scan already running. Please stop current scan first.")
             return
             
         try:
@@ -318,7 +338,6 @@ class LiveViewWindow(QWidget):
 
     def _scan_loop(self, params):
         try:
-            logger.info(f"Setting angle to {params['rotation_angle']}° for scan")
             self.run_async_task(
                 self.controller.set_rotation_angle(params['rotation_angle'])
             )
@@ -331,7 +350,7 @@ class LiveViewWindow(QWidget):
         while not self.stop_event.is_set():
             try:
                 acquisition_count += 1
-                logger.info(f"Starting acquisition #{acquisition_count}")
+                # logger.info(f"Starting acquisition #{acquisition_count}")
                 start_time = time.time()
                 
                 x, y = self.run_async_task(
@@ -346,11 +365,8 @@ class LiveViewWindow(QWidget):
 
                 if not self.stop_event.is_set():
                     self.data_ready.emit(x, y)
-                    logger.success(f"Acquisition #{acquisition_count} completed successfully")
                 
                 elapsed = time.time() - start_time
-                logger.debug(f"Acquisition took {elapsed:.2f}s")
-                
                 if elapsed < 0.1:
                     time.sleep(0.1)
                         
@@ -365,8 +381,8 @@ class LiveViewWindow(QWidget):
 
     @QtCore.pyqtSlot(str)
     def handle_scan_error(self, error_msg):
-        """Handle errors that occur in the scan loop"""
         logger.error(f"Scan error handler called: {error_msg}")
+        QMessageBox.critical(self, "Hardware Error", error_msg)
         self.stop_scan()
 
     @QtCore.pyqtSlot(object, object)
@@ -389,22 +405,21 @@ class LiveViewWindow(QWidget):
         logger.info("Closing application...")
         self.stop_scan()
         
-        try:
-            logger.info("Shutting down Horiba controller...")
-            future = asyncio.run_coroutine_threadsafe(
-                self.controller.shutdown(), 
-                self.loop
-            )
-            future.result(timeout=5)
-            logger.info("Controller shutdown complete.")
-        except Exception as e:
-            logger.error(f"Error during controller shutdown: {e}")
+        if self.controller:
+            try:
+                logger.info("Shutting down Horiba controller...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self.controller.shutdown(), 
+                    self.loop
+                )
+                future.result(timeout=5)
+            except Exception as e:
+                logger.error(f"Error during controller shutdown: {e}")
         
-        finally:
-            if self.loop and not self.loop.is_closed():
-                self.loop.call_soon_threadsafe(self.loop.stop)
-                if self.loop_thread:
-                    self.loop_thread.join(timeout=2)
+        if self.loop and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            if self.loop_thread:
+                self.loop_thread.join(timeout=2)
             
         event.accept()
 
