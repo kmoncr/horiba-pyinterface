@@ -8,9 +8,11 @@ from loguru import logger
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox
+    QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
+    QCheckBox
 )
 import pyqtgraph as pg
+import numpy as np
 
 try:
     from horibacontroller import HoribaController
@@ -26,7 +28,7 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
-    scan_error = QtCore.pyqtSignal(str)  # Error message signal
+    scan_error = QtCore.pyqtSignal(str)  
 
     def __init__(self):
         super().__init__()
@@ -45,6 +47,9 @@ class LiveViewWindow(QWidget):
         self.worker_thread = None
         self.stop_event = threading.Event()
         self.is_scanning = False  
+        
+        self.latest_wavelength = None
+        self.latest_intensity = None
         
         self.setWindowTitle("Horiba RTC")
         self.setGeometry(100, 100, 1200, 700)
@@ -78,6 +83,17 @@ class LiveViewWindow(QWidget):
         scan_layout.addWidget(self.stop_button)
         scan_box.setLayout(scan_layout)
         controls_layout.addWidget(scan_box)
+
+        plot_options_box = QGroupBox("Plot Options")
+        plot_options_layout = QFormLayout()
+        
+        self.wavenumber_checkbox = QCheckBox()
+        self.wavenumber_checkbox.setChecked(False)
+        self.wavenumber_checkbox.stateChanged.connect(self.toggle_x_axis)
+        plot_options_layout.addRow("Plot in Wavenumber (cm⁻¹):", self.wavenumber_checkbox)
+        
+        plot_options_box.setLayout(plot_options_layout)
+        controls_layout.addWidget(plot_options_box)
 
         spec_box = QGroupBox("Spectrometer Parameters")
         spec_layout = QFormLayout()
@@ -145,11 +161,6 @@ class LiveViewWindow(QWidget):
         self.ccd_y_size.setMinimum(1)
         self.ccd_y_size.setMaximum(256) 
 
-        self.ccd_y_bin = QSpinBox()
-        self.ccd_y_bin.setValue(256) 
-        self.ccd_y_bin.setMinimum(1)
-        self.ccd_y_bin.setMaximum(256)
-
         self.ccd_x_bin = QSpinBox()
         self.ccd_x_bin.setValue(1) 
         self.ccd_x_bin.setMinimum(1)
@@ -194,6 +205,26 @@ class LiveViewWindow(QWidget):
         self.scan_error.connect(self.handle_scan_error)
         logger.info("RTC GUI initialized.")
 
+    def wavelength_to_wavenumber(self, wavelength_nm):
+        """
+        wavenumber = (1/λ_excitation - 1/λ_scattered) * 10^7
+        """
+        excitation = self.excitation_wavelength.value()
+        try:
+            wavenumber = (1.0 / excitation - 1.0 / wavelength_nm) * 1e7
+            return wavenumber
+        except (ZeroDivisionError, TypeError):
+            return wavelength_nm 
+
+    def toggle_x_axis(self):
+        if self.wavenumber_checkbox.isChecked():
+            self.plot_item.setLabels(bottom='Raman Shift (cm⁻¹)')
+        else:
+            self.plot_item.setLabels(bottom='Wavelength (nm)')
+        
+        if self.latest_wavelength is not None and self.latest_intensity is not None:
+            self.update_plot(self.latest_wavelength, self.latest_intensity)
+
     def enumconv(self, param_name: str, value: str):
         if param_name == 'grating':
             return GRATING_CHOICES[value].value
@@ -231,7 +262,7 @@ class LiveViewWindow(QWidget):
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
             'rotation_angle': self.rotation_angle.value(),
-            'ccd_y_origin': self.ccd_y_origin.value(),  # ADDED
+            'ccd_y_origin': self.ccd_y_origin.value(),
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
         }
@@ -342,7 +373,15 @@ class LiveViewWindow(QWidget):
     def update_plot(self, x_data, y_data):
         try:
             if len(x_data) > 0 and len(y_data) > 0:
-                self.plot_data_item.setData(x_data, y_data)
+                self.latest_wavelength = np.array(x_data)
+                self.latest_intensity = np.array(y_data)
+                
+                if self.wavenumber_checkbox.isChecked():
+                    x_plot = self.wavelength_to_wavenumber(self.latest_wavelength)
+                else:
+                    x_plot = self.latest_wavelength
+                
+                self.plot_data_item.setData(x_plot, self.latest_intensity)
         except Exception as e:
             logger.warning(f"Failed to update plot: {e}")
 
@@ -368,7 +407,6 @@ class LiveViewWindow(QWidget):
                     self.loop_thread.join(timeout=2)
             
         event.accept()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

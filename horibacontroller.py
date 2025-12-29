@@ -37,20 +37,20 @@ class HoribaController:
         if enable_rotation_stage:
             self.rotation_stage = OptoSigmaController(port=rotation_stage_port)
             if self.rotation_stage.connect():
-                logger.info("Rotation stage connected")
+                logger.info("rotation stage connected")
                 try:
                     self.last_angle = self.rotation_stage.degree
                 except Exception as e:
-                    logger.warning(f"Could not read initial angle: {e}")
+                    logger.warning(f"could not read initial angle: {e}")
             else:
-                logger.warning("Failed to connect rotation stage - continuing without it")
+                logger.warning("failed to connect to rotation stage")
 
     async def connect_hardware(self):
-        """Initializes the connection to Horiba hardware once."""
+        """connect to spectrometer"""
         if self.is_connected:
             return
 
-        logger.info("Initializing Horiba Hardware Connection...")
+        logger.info("connecting...")
 
         if self.dm:
             try:
@@ -82,7 +82,7 @@ class HoribaController:
             await self._wait_for_mono(self.mono)
         
         self.is_connected = True
-        logger.success("Horiba Hardware Initialized and Ready.")
+        logger.success("initialization complete")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
@@ -161,7 +161,7 @@ class HoribaController:
             return x, y
 
         except Exception as e:
-            logger.exception("Failed to acquire spectrum - Connection might be lost")
+            logger.exception("failed to acquire spectrum")
             
             self.is_connected = False 
             
@@ -211,7 +211,7 @@ class HoribaController:
                 if self.mono: await self.mono.close()
                 if self.dm: await self.dm.stop()
             except Exception as e:
-                logger.error(f"Error closing Horiba devices: {e}")
+                logger.error(f"error closing devices: {e}")
             self.is_connected = False
         
-        logger.success("Shutdown complete")
+        logger.success("shutdown complete")
