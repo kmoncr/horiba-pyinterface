@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 import asyncio
 import threading
@@ -10,9 +9,9 @@ from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
     QLabel, QHBoxLayout, QGroupBox, QComboBox, 
     QPushButton, QVBoxLayout, QDoubleSpinBox, QFormLayout,
-    QWidget, QSizePolicy, QFrame, QMessageBox
+    QWidget, QFrame, QMessageBox
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QObject
+from PyQt5.QtCore import pyqtSignal, QTimer
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from pymeasure.experiment import Results
@@ -245,11 +244,59 @@ class MainWindow(ManagedWindow):
         logger.info(f"GUI updated with angle: {angle:.2f}°")
 
     def launch_external_tool(self, script_name):
-        logger.info(f"Launching {script_name}...")
-        try:
-            subprocess.Popen([sys.executable, script_name])
-        except Exception as e:
-            logger.error(f"Failed to launch {script_name}: {e}")
+        if hasattr(self, 'timer') and self.timer.isActive():
+            logger.info("pausing UI timer...")
+            self.timer.stop()
+
+        async def run_tool_sequence():
+            logger.info("starting external tool")
+            
+            if self.controller.is_connected:
+                logger.info("shutting down connection...")
+                await self.controller.shutdown()
+                self.controller.is_connected = False
+                await asyncio.sleep(2.0)
+            
+            logger.info(f"launching {script_name}...")
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, script_name,
+                    stdout=None, 
+                    stderr=None
+                )
+                await process.wait()
+                
+                logger.info(f"{script_name} finished. Waiting 2s before reconnect...")
+                await asyncio.sleep(2.0) 
+                
+            except Exception as e:
+                logger.error(f"failed to run tool: {e}")
+
+            logger.info("reconnecting hardware to GUI...")
+            try:
+                await self.controller.connect_hardware()
+                
+                if self.controller.rotation_stage:
+                    self.controller.last_angle = self.controller.rotation_stage.degree
+                
+                QTimer.singleShot(0, self.on_tool_sequence_finished)
+                
+            except Exception as e:
+                logger.error(f"Failed to reconnect hardware: {e}")
+
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(run_tool_sequence(), self.loop)
+        else:
+            logger.error("Asyncio loop is not running!")
+
+    def on_tool_sequence_finished(self):
+        logger.info("Restoring UI state...")
+        
+        self.angle_updated_signal.emit(self.controller.last_angle)
+        
+        if hasattr(self, 'timer') and not self.timer.isActive():
+            logger.info("Resuming UI polling timer.")
+            self.timer.start()
 
     def _make_sequencer_collapsible(self):
         from pymeasure.display.widgets import SequencerWidget
