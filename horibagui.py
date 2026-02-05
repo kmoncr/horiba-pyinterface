@@ -1,33 +1,31 @@
 import os
+import subprocess
 import sys
 import asyncio
 import threading
+from time import sleep
 from loguru import logger
+
 from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
     QLabel, QHBoxLayout, QGroupBox, QComboBox, 
     QPushButton, QVBoxLayout, QDoubleSpinBox, QFormLayout,
-    QWidget, QSizePolicy, QFrame
+    QWidget, QSizePolicy, QFrame, QMessageBox
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QObject
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from pymeasure.experiment import Results
-from time import sleep
 
-NO_HARDWARE = '--no-hardware' in sys.argv or '--debug' in sys.argv
-if NO_HARDWARE:
-    sys.argv = [arg for arg in sys.argv if arg not in ('--no-hardware', '--debug')]
-    logger.warning("no hardware mode")
-
-if not NO_HARDWARE:
+try:
     from horibacontroller import HoribaController
+except ImportError:
+    logger.critical("failed to import horibacontroller")
+    sys.exit(1)
 
 class CollapsibleSection(QWidget):
-    """collapsible section widget for sequencer"""
     def __init__(self, title="", parent=None, start_collapsed=False):
         super().__init__(parent)
-        
         self._is_collapsed = start_collapsed
         self._title = title
         self._content_widget = None
@@ -53,7 +51,6 @@ class CollapsibleSection(QWidget):
         """)
         self._header.clicked.connect(self.toggle)
         self._update_header()
-        
         self._layout.addWidget(self._header)
         
         self._content_container = QFrame()
@@ -61,7 +58,6 @@ class CollapsibleSection(QWidget):
         self._content_layout = QVBoxLayout(self._content_container)
         self._content_layout.setContentsMargins(5, 5, 5, 5)
         self._layout.addWidget(self._content_container)
-        
         self._content_container.setVisible(not start_collapsed)
     
     def _update_header(self):
@@ -72,10 +68,8 @@ class CollapsibleSection(QWidget):
         self._is_collapsed = not self._is_collapsed
         self._content_container.setVisible(not self._is_collapsed)
         self._update_header()
-        logger.info(f"Sequencer collapsed: {self._is_collapsed}")
     
     def set_content(self, widget):
-        """Set the widget to show/hide."""
         self._content_widget = widget
         widget.setParent(self._content_container)
         self._content_layout.addWidget(widget)
@@ -83,47 +77,11 @@ class CollapsibleSection(QWidget):
         self._content_container.setVisible(not self._is_collapsed)
 
 
-class MockController:
-    """Mock controller for GUI testing without hardware."""
-    def __init__(self):
-        self.last_angle = 0.0
-        self.is_connected = False
-        logger.info("MockController initialized (no hardware)")
-    
-    async def connect_hardware(self):
-        logger.info("MockController: Simulating hardware connection...")
-        await asyncio.sleep(0.5)
-        self.is_connected = True
-        logger.success("MockController: Fake hardware connected")
-    
-    async def acquire_spectrum(self, **kwargs):
-        import numpy as np
-        logger.info(f"MockController: Simulating spectrum acquisition with params: {kwargs}")
-        await asyncio.sleep(kwargs.get('exposure', 1.0))
-        # fake spectrum
-        x = np.linspace(500, 600, 1024).tolist()
-        y = (np.random.rand(1024) * 1000 + 500).tolist()
-        return x, y
-    
-    async def set_rotation_angle(self, value: float):
-        logger.info(f"MockController: Setting angle to {value}°")
-        await asyncio.sleep(0.2)
-        self.last_angle = value
-    
-    async def get_rotation_angle(self) -> float:
-        return self.last_angle
-    
-    async def return_rotation_to_origin(self):
-        logger.info("MockController: Returning to origin")
-        await asyncio.sleep(0.2)
-        self.last_angle = 0.0
-    
-    async def shutdown(self):
-        logger.info("MockController: Shutting down")
-        self.is_connected = False
-
-
 class MainWindow(ManagedWindow):
+    
+    temp_updated_signal = pyqtSignal(float)
+    angle_updated_signal = pyqtSignal(float)
+    
     def __init__(self):
         super().__init__(
             procedure_class=HoribaSpectrumProcedure,
@@ -142,20 +100,23 @@ class MainWindow(ManagedWindow):
             sequencer=True,
             sequencer_inputs=['rotation_angle'],
         )
-        self.setWindowTitle('Horiba Spectrum Scan' + (' [NO HARDWARE]' if NO_HARDWARE else ''))
-        
+        self.setWindowTitle('Horiba Spectrum Scan')
         self.setMinimumSize(1200, 800)
+
+        self.temp_updated_signal.connect(self.on_temp_ui_update)
+        self.angle_updated_signal.connect(self.on_angle_ui_update)
 
         self.loop = None
         self.loop_thread = None
         self._start_event_loop()
         
-        if NO_HARDWARE:
-            self.controller = MockController()
-        else:
-            self.controller = HoribaController(enable_logging=True)
+        self.controller = HoribaController(enable_logging=True)
         
-        self.run_async_task(self.controller.connect_hardware())
+        try:
+            self.run_async_task(self.controller.connect_hardware())
+        except Exception as e:
+            logger.error(f"Hardware connection failed: {e}")
+            QMessageBox.critical(self, "Connection Error", f"Failed to connect to hardware:\n{e}")
         
         grating_widget = QGroupBox("Grating Control")
         grating_layout = QHBoxLayout()
@@ -206,38 +167,104 @@ class MainWindow(ManagedWindow):
         self.inputs.layout().addWidget(grating_widget)
         self.inputs.layout().addWidget(scan_count_widget)
         self.inputs.layout().addWidget(rotation_widget)
-        self._make_sequencer_collapsible()
+        
+        self.setup_tools_ui() 
+        self.inputs.layout().addWidget(self.tools_group)
 
+        self._make_sequencer_collapsible()
         self.file_input.extensions = ['csv']
         
         self.update_current_angle()
+        
+        self.temp_timer = QTimer()
+        self.temp_timer.timeout.connect(self.trigger_temperature_update)
+        self.temp_timer.start(5000) 
+
+    def setup_tools_ui(self):
+        self.tools_group = QGroupBox("Tools")
+        tools_layout = QVBoxLayout()
+        
+        self.temp_label = QLabel("CCD Temp: -- °C")
+        self.temp_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
+        tools_layout.addWidget(self.temp_label)
+        
+        btn_layout = QHBoxLayout()
+        self.btn_rtc = QPushButton("RTC")
+        self.btn_rtc.clicked.connect(lambda: self.launch_external_tool("rtc.py"))
+        self.btn_image = QPushButton("Image Scan")
+        self.btn_image.clicked.connect(lambda: self.launch_external_tool("image.py"))
+        
+        btn_layout.addWidget(self.btn_rtc)
+        btn_layout.addWidget(self.btn_image)
+        tools_layout.addLayout(btn_layout)
+        self.tools_group.setLayout(tools_layout)
+
+    def trigger_temperature_update(self):
+        if not self.controller or not self.controller.is_connected:
+            self.temp_label.setText("CCD Temp: Disconnected")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.get_ccd_temperature(), 
+            self.loop 
+        )
+        future.add_done_callback(self._handle_temp_result)
+
+    def _handle_temp_result(self, fut):
+        try:
+            temp = fut.result()
+            self.temp_updated_signal.emit(temp)
+        except Exception:
+            self.temp_updated_signal.emit(-999.0)
+
+    def on_temp_ui_update(self, temp):
+        if temp == -999.0:
+            self.temp_label.setText("CCD Temp: Err")
+        else:
+            color = "green" if temp < -50 else "red" 
+            self.temp_label.setText(f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>")
+
+    def update_current_angle(self):
+        logger.debug("Requesting current angle update...")
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.get_rotation_angle(),
+            self.loop
+        )
+        future.add_done_callback(self._handle_angle_result)
+
+    def _handle_angle_result(self, fut):
+        try:
+            angle = fut.result()
+            self.angle_updated_signal.emit(angle)
+        except Exception as e:
+            logger.error(f"Angle fetch error: {e}")
+
+    def on_angle_ui_update(self, angle):
+        self.current_angle_display.setText(f"Current Angle: {angle:.2f}°")
+        self.set_angle_input.setValue(angle)
+        logger.info(f"GUI updated with angle: {angle:.2f}°")
+
+    def launch_external_tool(self, script_name):
+        logger.info(f"Launching {script_name}...")
+        try:
+            subprocess.Popen([sys.executable, script_name])
+        except Exception as e:
+            logger.error(f"Failed to launch {script_name}: {e}")
 
     def _make_sequencer_collapsible(self):
-        """Make the sequencer widget collapsible and start it collapsed."""
         from pymeasure.display.widgets import SequencerWidget
         from PyQt5.QtWidgets import QDockWidget
         
         sequencer_widgets = self.findChildren(SequencerWidget)
-        
-        if not sequencer_widgets:
-            logger.warning("Could not find sequencer widget")
-            return
+        if not sequencer_widgets: return
         
         sequencer_widget = sequencer_widgets[0]
         parent = sequencer_widget.parent()
         
         if isinstance(parent, QDockWidget):
-            logger.info("Sequencer is in a QDockWidget, using setWidget()")
-            
-            self._sequencer_collapsible = CollapsibleSection(
-                "Sequencer (Angle Sweep)", 
-                start_collapsed=True
-            )
+            self._sequencer_collapsible = CollapsibleSection("Sequencer (Angle Sweep)", start_collapsed=True)
             self._sequencer_collapsible.set_content(sequencer_widget)
-            
             parent.setWidget(self._sequencer_collapsible)
-            
-            logger.success("Sequencer wrapped in collapsible section")
             return
         
         if parent is not None:
@@ -246,22 +273,12 @@ class MainWindow(ManagedWindow):
                 idx = parent_layout.indexOf(sequencer_widget)
                 if idx >= 0:
                     parent_layout.removeWidget(sequencer_widget)
-                    
-                    self._sequencer_collapsible = CollapsibleSection(
-                        "Sequencer (Angle Sweep)", 
-                        start_collapsed=True
-                    )
+                    self._sequencer_collapsible = CollapsibleSection("Sequencer (Angle Sweep)", start_collapsed=True)
                     self._sequencer_collapsible.set_content(sequencer_widget)
-                    
                     if hasattr(parent_layout, 'insertWidget'):
                         parent_layout.insertWidget(idx, self._sequencer_collapsible)
                     else:
                         parent_layout.addWidget(self._sequencer_collapsible)
-                    
-                    logger.success("Sequencer wrapped in collapsible section")
-                    return
-        
-        logger.warning("Could not wrap sequencer in collapsible section")
 
     def _start_event_loop(self):
         def run_loop(loop):
@@ -271,7 +288,6 @@ class MainWindow(ManagedWindow):
         self.loop = asyncio.new_event_loop()
         self.loop_thread = threading.Thread(target=run_loop, args=(self.loop,), daemon=True)
         self.loop_thread.start()
-        logger.info("Event loop started in background thread")
 
     def run_async_task(self, task, timeout=30):
         try:
@@ -281,28 +297,26 @@ class MainWindow(ManagedWindow):
             logger.error(f"Error running async task: {e}")
             raise
 
-    def update_current_angle(self):
-        logger.debug("Requesting current angle update...")
-        async def _get_angle():
-            angle = await self.controller.get_rotation_angle()
-            self.current_angle_display.setText(f"Current Angle: {angle:.2f}°")
-            self.set_angle_input.setValue(angle)
-            logger.info(f"GUI updated with angle: {angle:.2f}°")
-        
-        self.run_async_task(_get_angle())
-
     def do_go_to_angle(self):
         target_angle = self.set_angle_input.value()
         logger.info(f"GUI: Setting angle to {target_angle}°")
-        self.run_async_task(self.controller.set_rotation_angle(target_angle))
-        self.current_angle_display.setText(f"Current Angle: {target_angle:.2f}°")
+        
+        async def _set_and_update():
+            await self.controller.set_rotation_angle(target_angle)
+            return await self.controller.get_rotation_angle()
 
+        future = asyncio.run_coroutine_threadsafe(_set_and_update(), self.loop)
+        future.add_done_callback(self._handle_angle_result)
 
     def do_return_to_origin(self):
         logger.info("GUI: Returning to origin")
-        self.run_async_task(self.controller.return_rotation_to_origin())
-        self.current_angle_display.setText("Current Angle: 0.00°")
-        self.set_angle_input.setValue(0.0)
+        
+        async def _home_and_update():
+            await self.controller.return_rotation_to_origin()
+            return await self.controller.get_rotation_angle()
+
+        future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
+        future.add_done_callback(self._handle_angle_result)
 
     def update_grating(self, text):
         logger.info(f"GUI: Grating changed to {text}")
@@ -322,18 +336,13 @@ class MainWindow(ManagedWindow):
             if hasattr(self.inputs, param_name):
                 value = getattr(self.inputs, param_name).value()
                 setattr(procedure, param_name, value)
-                logger.info(f"  {param_name}: {value}")
         
         if rotation_angle is not None:
             procedure.rotation_angle = rotation_angle
-            logger.info(f"  rotation_angle (sequenced): {rotation_angle}")
         else:
             procedure.rotation_angle = self.set_angle_input.value()
-            logger.info(f"  rotation_angle: {procedure.rotation_angle}")
 
         procedure.grating = self.grating_combo.currentText()
-        logger.info(f"  grating: {procedure.grating}")
-        
         return procedure
 
     def queue(self, procedure=None):
@@ -344,7 +353,6 @@ class MainWindow(ManagedWindow):
         base_rotation_angle = procedure.rotation_angle
 
         for i in range(1, scans_per_angle + 1):
-            
             current_procedure = self.make_procedure(rotation_angle=base_rotation_angle)
             current_procedure.scan_number = i 
             
@@ -360,14 +368,11 @@ class MainWindow(ManagedWindow):
             self.manager.queue(experiment)
         
         self.update_current_angle()
-        
-        sleep(2)
+        sleep(0.5)
 
     def unique_filename(self, directory, base_filename, rotation_angle, scan_number):
         counter = 1
         angle_str = f"{rotation_angle:.1f}deg"
-        
-        # Filename format: [base_filename]_[angle.Xdeg]_S[scan_number]_[counter].csv
         filename = f"{base_filename}_{angle_str}_S{scan_number}_{counter}.csv"
         file_path = os.path.join(directory, filename)
 
@@ -394,7 +399,6 @@ class MainWindow(ManagedWindow):
                 self.loop.call_soon_threadsafe(self.loop.stop)
                 if self.loop_thread:
                     self.loop_thread.join(timeout=2)
-        
         event.accept()
 
 if __name__ == "__main__":

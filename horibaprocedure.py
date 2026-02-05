@@ -90,13 +90,12 @@ class HoribaSpectrumProcedure(Procedure):
     def run_async(self, coro):
         """Helper to run async coroutines from the worker thread"""
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return future.result()  # Block until complete
+        return future.result() 
 
     def execute(self):
         """Execute a single measurement (one scan) at the current angle."""
         logger.info(f"Setting rotation angle to {self.rotation_angle}° for Scan {self.scan_number}")
         
-        # Set the rotation angle once at the beginning of the procedure
         self.run_async(
             self.controller.set_rotation_angle(self.rotation_angle)
         )
@@ -114,7 +113,6 @@ class HoribaSpectrumProcedure(Procedure):
             'ccd_x_bin': self.ccd_x_bin,
         }
         
-        # Perform the single scan
         logger.info(f"Starting acquisition for Scan {self.scan_number} at angle {self.rotation_angle}°")
         
         x_data, y_data = self.run_async(
@@ -142,7 +140,6 @@ class HoribaSpectrumProcedure(Procedure):
         
         logger.success(f"Completed Scan {self.scan_number} at angle {self.rotation_angle}°")
         
-        # Check for shutdown request after the scan
         if self.should_stop():
             logger.warning(f"Stop requested after scan {self.scan_number}. Stopping.")
 

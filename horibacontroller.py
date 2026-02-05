@@ -171,8 +171,6 @@ class HoribaController:
             except:
                 pass
             self.dm = None 
-            
-            raise
 
     async def _wait_for_mono(self, mono: Monochromator) -> None:
         while await mono.is_busy():
@@ -196,6 +194,16 @@ class HoribaController:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
             self.rotation_stage.return_to_origin()
             self.last_angle = 0.0
+    
+    async def get_ccd_temperature(self) -> float:
+        if self.is_connected and self.ccd:
+            try:
+                temp = await self.ccd.get_chip_temperature()
+                return temp
+            except Exception as e:
+                logger.warning(f"Failed to read temperature: {e}")
+                return -999.0
+        return 0.0
 
     async def shutdown(self) -> None:
         logger.info("Shutting down hardware...")
