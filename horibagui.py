@@ -202,6 +202,9 @@ class MainWindow(ManagedWindow):
         if not self.controller or not self.controller.is_connected:
             self.temp_label.setText("CCD Temp: Disconnected")
             return
+    
+        if hasattr(self, 'manager') and self.manager.is_running():
+            return
 
         future = asyncio.run_coroutine_threadsafe(
             self.controller.get_ccd_temperature(), 
@@ -234,6 +237,7 @@ class MainWindow(ManagedWindow):
     def _handle_angle_result(self, fut):
         try:
             angle = fut.result()
+            logger.info(f"Fetched angle from hardware: {angle:.2f}°") 
             self.angle_updated_signal.emit(angle)
         except Exception as e:
             logger.error(f"Angle fetch error: {e}")
