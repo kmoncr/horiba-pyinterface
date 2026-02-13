@@ -121,6 +121,7 @@ dependencies = [
     { name = "pyqt5-qt5" },
     { name = "pyqt5-sip" },
     { name = "pyqtgraph" },
+    { name = "thorlabspm100" },
 ]
 
 [package.metadata]
@@ -133,6 +134,7 @@ requires-dist = [
     { name = "pyqt5-qt5", specifier = "==5.15.2" },
     { name = "pyqt5-sip", specifier = "==12.13.0" },
     { name = "pyqtgraph", specifier = "==0.12.4" },
+    { name = "thorlabspm100", specifier = ">=1.2.2" },
 ]
 
 [[package]]
@@ -559,6 +561,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050 },
 ]
+
+[[package]]
+name = "thorlabspm100"
+version = "1.2.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/5e/ef1769d291e959d19bd8a5a488e899897ff1f657eca39fe8db872fa691dd/ThorlabsPM100-1.2.2.tar.gz", hash = "sha256:881cec8149b17c77d4af0097ee3fdb40eaeb618c876d49f1bc42c87611737967", size = 11344 }
 
 [[package]]
 name = "typing-extensions"

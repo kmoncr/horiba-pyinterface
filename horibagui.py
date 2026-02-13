@@ -351,10 +351,13 @@ class MainWindow(ManagedWindow):
     def do_go_to_angle(self):
         target_angle = self.set_angle_input.value()
         logger.info(f"GUI: Setting angle to {target_angle}°")
-        
+    
         async def _set_and_update():
             await self.controller.set_rotation_angle(target_angle)
-            return await self.controller.get_rotation_angle()
+            await asyncio.sleep(0.5)  # Give it time to settle
+            actual_angle = await self.controller.get_rotation_angle()
+            logger.info(f"Target: {target_angle}°, Actual: {actual_angle}°")
+            return actual_angle
 
         future = asyncio.run_coroutine_threadsafe(_set_and_update(), self.loop)
         future.add_done_callback(self._handle_angle_result)

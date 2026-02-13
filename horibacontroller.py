@@ -183,12 +183,14 @@ class HoribaController:
     async def set_rotation_angle(self, value: float) -> None:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
             self.rotation_stage.degree = value
+            await asyncio.sleep(0.5)
             self.last_angle = value
 
     async def get_rotation_angle(self) -> float:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
             self.last_angle = self.rotation_stage.degree
-        return self.last_angle
+            return self.last_angle
+        return self.last_angle 
 
     async def return_rotation_to_origin(self) -> None:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
