@@ -10,7 +10,7 @@ from optosigmacontroller import OptoSigmaController
 
 # Thorlabs controller is optional – only imported if requested
 try:
-    from thorlabsk10cr2controller import ThorlabsK10CR2Controller
+    from thorlabscontroller import ThorlabsK10CR2Controller
     _THORLABS_AVAILABLE = True
 except ImportError:
     _THORLABS_AVAILABLE = False
@@ -24,9 +24,7 @@ class HoribaController:
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
         # ── Thorlabs K10CR2 rotation mount ───────────────────
-        enable_thorlabs_stage: bool = False,
-        thorlabs_serial: str = "55508504",
-        thorlabs_kinesis_path: str = r"C:\Program Files\Thorlabs\Kinesis",
+
     ):
         if not enable_logging:
             logger.remove()
@@ -60,26 +58,12 @@ class HoribaController:
                 logger.warning("failed to connect to OptoSigma rotation stage")
 
         # ── Thorlabs K10CR2 stage ──────────────────────────
+        # Note: not connected here – GUI calls do_thorlabs_connect() after
+        # the spectrometer is up, avoiding a multi-second Kinesis init delay
+        # that would block the ICL from finding the mono/CCD.
         self.thorlabs_stage: ThorlabsK10CR2Controller | None = None
-        self.enable_thorlabs_stage = enable_thorlabs_stage
+        self.enable_thorlabs_stage = False   # set True only after connect()
         self.last_thorlabs_angle = 0.0
-
-        if enable_thorlabs_stage:
-            if not _THORLABS_AVAILABLE:
-                logger.warning("thorlabsk10cr2controller.py not found – Thorlabs stage disabled")
-            else:
-                self.thorlabs_stage = ThorlabsK10CR2Controller(
-                    serial_number=thorlabs_serial,
-                    kinesis_path=thorlabs_kinesis_path,
-                )
-                if self.thorlabs_stage.connect():
-                    logger.info(f"Thorlabs K10CR2 {thorlabs_serial} connected")
-                    try:
-                        self.last_thorlabs_angle = self.thorlabs_stage.degree
-                    except Exception as e:
-                        logger.warning(f"could not read initial Thorlabs angle: {e}")
-                else:
-                    logger.warning("failed to connect to Thorlabs K10CR2 stage")
 
     # ── Hardware connection ───────────────────────────────────────────
 
@@ -100,12 +84,19 @@ class HoribaController:
         self.dm = DeviceManager(start_icl=True)
         await self.dm.start()
 
+        logger.info("Waiting for hardware discovery...")
+        
+        for _ in range(20):
+            if self.dm.monochromators and self.dm.charge_coupled_devices:
+                break
+            await asyncio.sleep(0.5)
+
         monos = self.dm.monochromators
         ccds = self.dm.charge_coupled_devices
 
         if not monos or not ccds:
             await self.dm.stop()
-            raise RuntimeError("No mono or CCD found")
+            raise RuntimeError(f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})")
 
         self.mono = monos[0]
         self.ccd = ccds[0]

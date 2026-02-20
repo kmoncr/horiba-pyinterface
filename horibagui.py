@@ -9,7 +9,7 @@ from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
     QLabel, QHBoxLayout, QGroupBox, QComboBox,
     QPushButton, QVBoxLayout, QDoubleSpinBox, QFormLayout,
-    QWidget, QFrame, QMessageBox, QLineEdit, QCheckBox,
+    QWidget, QFrame, QMessageBox,
 )
 from PyQt5.QtCore import pyqtSignal, QTimer
 from pymeasure.display.windows import ManagedWindow
@@ -110,13 +110,7 @@ class MainWindow(ManagedWindow):
         self._start_event_loop()
 
         # ── Controller (Thorlabs disabled by default) ─────────────────
-        # To enable the Thorlabs stage at startup, change enable_thorlabs_stage=True
-        # and set the correct serial number.
-        self.controller = HoribaController(
-            enable_logging=True,
-            enable_thorlabs_stage=False,   # ← flip to True to activate
-            thorlabs_serial="55508504",    # ← replace with your serial
-        )
+        self.controller = HoribaController(enable_logging=True)
 
         try:
             self.run_async_task(self.controller.connect_hardware())
@@ -177,24 +171,20 @@ class MainWindow(ManagedWindow):
         thorlabs_widget = QGroupBox("Thorlabs K10CR2 Rotation Mount")
         thorlabs_layout = QVBoxLayout()
 
-        # Enable / disable + serial number row
-        tl_connect_layout = QHBoxLayout()
-        self.thorlabs_enable_check = QCheckBox("Enable")
-        self.thorlabs_enable_check.setChecked(False)
-        self.thorlabs_serial_input = QLineEdit("55508504")
-        self.thorlabs_serial_input.setPlaceholderText("Serial number")
-        self.thorlabs_serial_input.setMaximumWidth(100)
+        # Status row with connect/disconnect buttons
+        tl_top_layout = QHBoxLayout()
+        self.thorlabs_status_label = QLabel("Status: not connected")
+        self.thorlabs_status_label.setStyleSheet("color: grey;")
         self.thorlabs_connect_button = QPushButton("Connect")
         self.thorlabs_connect_button.clicked.connect(self.do_thorlabs_connect)
         self.thorlabs_disconnect_button = QPushButton("Disconnect")
         self.thorlabs_disconnect_button.clicked.connect(self.do_thorlabs_disconnect)
         self.thorlabs_disconnect_button.setEnabled(False)
-        tl_connect_layout.addWidget(self.thorlabs_enable_check)
-        tl_connect_layout.addWidget(QLabel("S/N:"))
-        tl_connect_layout.addWidget(self.thorlabs_serial_input)
-        tl_connect_layout.addWidget(self.thorlabs_connect_button)
-        tl_connect_layout.addWidget(self.thorlabs_disconnect_button)
-        thorlabs_layout.addLayout(tl_connect_layout)
+        tl_top_layout.addWidget(self.thorlabs_status_label)
+        tl_top_layout.addStretch()
+        tl_top_layout.addWidget(self.thorlabs_connect_button)
+        tl_top_layout.addWidget(self.thorlabs_disconnect_button)
+        thorlabs_layout.addLayout(tl_top_layout)
 
         # Current angle display
         tl_current_layout = QHBoxLayout()
@@ -222,12 +212,12 @@ class MainWindow(ManagedWindow):
         self.thorlabs_home_button.clicked.connect(self.do_thorlabs_home)
         thorlabs_layout.addWidget(self.thorlabs_home_button)
 
-        # Status label
-        self.thorlabs_status_label = QLabel("Status: not connected")
-        self.thorlabs_status_label.setStyleSheet("color: grey;")
-        thorlabs_layout.addWidget(self.thorlabs_status_label)
-
         thorlabs_widget.setLayout(thorlabs_layout)
+
+        # Auto-update UI if already connected at startup
+        if (self.controller.thorlabs_stage is not None
+                and self.controller.thorlabs_stage.is_connected):
+            self._thorlabs_connect_ok()
 
         # ── Assemble controls pane ────────────────────────────────────
         self.inputs.layout().addWidget(grating_widget)
@@ -339,53 +329,47 @@ class MainWindow(ManagedWindow):
     # ── Thorlabs angle control ────────────────────────────────────────
 
     def do_thorlabs_connect(self):
-        """Connect to Thorlabs stage using the serial number from the text field."""
-        serial = self.thorlabs_serial_input.text().strip()
-        if not serial:
-            QMessageBox.warning(self, "Thorlabs", "Please enter a serial number.")
-            return
-
+        """Connect to Thorlabs K10CR2 (serial 55508504) in a background thread."""
+        self.thorlabs_connect_button.setEnabled(False)
         self.thorlabs_status_label.setText("Status: connecting…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
 
-        def _connect():
-            from thorlabsk10cr2controller import ThorlabsK10CR2Controller
-            stage = ThorlabsK10CR2Controller(serial_number=serial)
-            ok = stage.connect()
-            return stage, ok
-
-        def _done(fut):
+        def _connect_thread():
             try:
-                stage, ok = fut.result()
+                # Support both possible class names in thorlabscontroller.py
+                import thorlabscontroller as _tlmod
+                _cls = getattr(_tlmod, 'ThorlabsK10CR2Controller',
+                               getattr(_tlmod, 'ThorlabsK10CR1Controller', None))
+                if _cls is None:
+                    raise ImportError("No ThorlabsK10CR1/2Controller class found in thorlabscontroller.py")
+                stage = _cls(serial_number="55508504")
+                ok = stage.connect()
+                if ok:
+                    self.controller.thorlabs_stage = stage
+                    self.controller.enable_thorlabs_stage = True
+                    self.controller.last_thorlabs_angle = stage.degree
+                    QTimer.singleShot(0, self._thorlabs_connect_ok)
+                else:
+                    QTimer.singleShot(
+                        0, lambda: self._thorlabs_connect_failed("connect() returned False")
+                    )
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._thorlabs_connect_failed(str(e)))
-                return
+                err = str(e)
+                QTimer.singleShot(0, lambda: self._thorlabs_connect_failed(err))
 
-            if ok:
-                self.controller.thorlabs_stage = stage
-                self.controller.enable_thorlabs_stage = True
-                self.controller.last_thorlabs_angle = stage.degree
-                QTimer.singleShot(0, self._thorlabs_connect_ok)
-            else:
-                QTimer.singleShot(0, lambda: self._thorlabs_connect_failed("connect() returned False"))
-
-        future = asyncio.run_coroutine_threadsafe(
-            asyncio.get_event_loop().run_in_executor(None, _connect),
-            self.loop,
-        )
-        future.add_done_callback(_done)
+        threading.Thread(target=_connect_thread, daemon=True).start()
 
     def _thorlabs_connect_ok(self):
         self.thorlabs_status_label.setText("Status: connected ✓")
         self.thorlabs_status_label.setStyleSheet("color: green;")
         self.thorlabs_connect_button.setEnabled(False)
         self.thorlabs_disconnect_button.setEnabled(True)
-        self.thorlabs_enable_check.setChecked(True)
         self.update_thorlabs_angle()
 
     def _thorlabs_connect_failed(self, reason: str):
         self.thorlabs_status_label.setText(f"Status: failed – {reason}")
         self.thorlabs_status_label.setStyleSheet("color: red;")
+        self.thorlabs_connect_button.setEnabled(True)  # allow retry
         QMessageBox.critical(self, "Thorlabs Connection Error",
                              f"Could not connect to K10CR2:\n{reason}")
 
@@ -395,15 +379,17 @@ class MainWindow(ManagedWindow):
                 self.controller.thorlabs_stage.disconnect()
             except Exception as e:
                 logger.error(f"Thorlabs disconnect error: {e}")
+        self.controller.thorlabs_stage = None
         self.controller.enable_thorlabs_stage = False
         self.thorlabs_status_label.setText("Status: disconnected")
         self.thorlabs_status_label.setStyleSheet("color: grey;")
         self.thorlabs_connect_button.setEnabled(True)
         self.thorlabs_disconnect_button.setEnabled(False)
-        self.thorlabs_enable_check.setChecked(False)
+        self.thorlabs_angle_display.setText("Current Angle: --.-°")
 
     def update_thorlabs_angle(self):
-        if not self.controller.enable_thorlabs_stage:
+        if not (self.controller.thorlabs_stage and
+                self.controller.thorlabs_stage.is_connected):
             return
         future = asyncio.run_coroutine_threadsafe(
             self.controller.get_thorlabs_angle(), self.loop
@@ -422,9 +408,9 @@ class MainWindow(ManagedWindow):
         self.thorlabs_angle_input.setValue(angle)
 
     def do_thorlabs_go_to_angle(self):
-        if not self.controller.enable_thorlabs_stage:
-            QMessageBox.information(self, "Thorlabs",
-                                    "Thorlabs stage is not connected.")
+        if not (self.controller.thorlabs_stage and
+                self.controller.thorlabs_stage.is_connected):
+            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not connected.")
             return
         target = self.thorlabs_angle_input.value()
 
@@ -436,9 +422,9 @@ class MainWindow(ManagedWindow):
         future.add_done_callback(self._handle_thorlabs_angle_result)
 
     def do_thorlabs_home(self):
-        if not self.controller.enable_thorlabs_stage:
-            QMessageBox.information(self, "Thorlabs",
-                                    "Thorlabs stage is not connected.")
+        if not (self.controller.thorlabs_stage and
+                self.controller.thorlabs_stage.is_connected):
+            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not connected.")
             return
         self.thorlabs_status_label.setText("Status: homing…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
@@ -628,9 +614,13 @@ class MainWindow(ManagedWindow):
         logger.info(f"Generated filename: {file_path}")
         return file_path
 
-    # ── Close ─────────────────────────────────────────────────────────
-
     def closeEvent(self, event):
+        logger.info("Closing application...")
+        if hasattr(self, '_is_closing') and self._is_closing:
+            event.accept()
+            return
+        self._is_closing = True
+
         logger.info("Closing application...")
         try:
             future = asyncio.run_coroutine_threadsafe(
