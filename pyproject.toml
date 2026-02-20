@@ -1,7 +1,7 @@
 [project]
 name = "horiba"
 version = "0.1.0"
-description = "Add your description here"
+description = "Horiba iHR 550 + Synapse Plus CCD interface with OptoSigma & Thorlabs K10CR2 rotation stages"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,8 @@ dependencies = [
     "pyqt5-qt5==5.15.2",
     "pyqt5-sip==12.13.0",
     "pyqtgraph==0.12.4",
+    "thorlabspm100>=1.2.2",
+    "pythonnet>=3.0.3",
 ]
 
 [tool.uv.sources]
