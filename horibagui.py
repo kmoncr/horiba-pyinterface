@@ -9,7 +9,7 @@ from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
     QLabel, QHBoxLayout, QGroupBox, QComboBox,
     QPushButton, QVBoxLayout, QDoubleSpinBox, QFormLayout,
-    QWidget, QFrame, QMessageBox,
+    QWidget, QFrame, QMessageBox, QTabWidget, QGridLayout
 )
 from PyQt5.QtCore import pyqtSignal, QTimer
 from pymeasure.display.windows import ManagedWindow
@@ -21,9 +21,6 @@ try:
 except ImportError:
     logger.critical("failed to import horibacontroller")
     sys.exit(1)
-
-
-# ── CollapsibleSection ────────────────────────────────────────────────────────
 
 class CollapsibleSection(QWidget):
     def __init__(self, title="", parent=None, start_collapsed=False):
@@ -70,9 +67,6 @@ class CollapsibleSection(QWidget):
         widget.setVisible(True)
         self._content_container.setVisible(not self._is_collapsed)
 
-
-# ── MainWindow ────────────────────────────────────────────────────────────────
-
 class MainWindow(ManagedWindow):
 
     temp_updated_signal         = pyqtSignal(float)
@@ -100,7 +94,6 @@ class MainWindow(ManagedWindow):
         self.setWindowTitle('Horiba Spectrum Scan')
         self.setMinimumSize(1200, 800)
 
-        # Connect cross-thread signals
         self.temp_updated_signal.connect(self.on_temp_ui_update)
         self.angle_updated_signal.connect(self.on_angle_ui_update)
         self.thorlabs_angle_updated_signal.connect(self.on_thorlabs_angle_ui_update)
@@ -109,7 +102,6 @@ class MainWindow(ManagedWindow):
         self.loop_thread = None
         self._start_event_loop()
 
-        # ── Controller (Thorlabs disabled by default) ─────────────────
         self.controller = HoribaController(enable_logging=True)
 
         try:
@@ -119,111 +111,132 @@ class MainWindow(ManagedWindow):
             QMessageBox.critical(self, "Connection Error",
                                  f"Failed to connect to hardware:\n{e}")
 
-        # ── Grating ───────────────────────────────────────────────────
-        grating_widget = QGroupBox("Grating Control")
-        grating_layout = QHBoxLayout()
+        row1 = QWidget()
+        row1_layout = QHBoxLayout(row1)
+        row1_layout.setContentsMargins(0, 0, 0, 0)
+        row1_layout.setSpacing(6)
+
+        grating_widget = QGroupBox("Grating")
+        grating_layout = QFormLayout()
+        grating_layout.setContentsMargins(6, 6, 6, 6)
         self.grating_combo = QComboBox()
         self.grating_combo.addItems(GRATING_CHOICES.keys())
         self.grating_combo.setCurrentText('Third (150 grooves/mm)')
         self.grating_combo.currentTextChanged.connect(self.update_grating)
-        grating_layout.addWidget(QLabel("Current Grating:"))
-        grating_layout.addWidget(self.grating_combo)
+        grating_layout.addRow("Grating:", self.grating_combo)
         grating_widget.setLayout(grating_layout)
 
-        # ── Scan count ────────────────────────────────────────────────
-        scan_count_widget = QGroupBox("Scan Sequence Control")
+        scan_count_widget = QGroupBox("Scan Sequence")
         scan_count_layout = QFormLayout()
+        scan_count_layout.setContentsMargins(6, 6, 6, 6)
         self.scans_per_angle_input = QtWidgets.QSpinBox()
         self.scans_per_angle_input.setRange(1, 100)
         self.scans_per_angle_input.setValue(1)
-        scan_count_layout.addRow("Scans per Angle:", self.scans_per_angle_input)
+        scan_count_layout.addRow("Scans/Angle:", self.scans_per_angle_input)
         scan_count_widget.setLayout(scan_count_layout)
 
-        # ── OptoSigma rotation stage ──────────────────────────────────
-        rotation_widget = QGroupBox("OptoSigma Rotation Stage")
-        rotation_layout = QVBoxLayout()
+        row1_layout.addWidget(grating_widget, stretch=3)
+        row1_layout.addWidget(scan_count_widget, stretch=2)
 
-        current_angle_layout = QHBoxLayout()
-        self.current_angle_display = QLabel("Current Angle: --.-°")
+        stages_group = QGroupBox("Rotation Stages")
+        stages_outer = QVBoxLayout(stages_group)
+        stages_outer.setContentsMargins(4, 4, 4, 4)
+
+        stage_tabs = QTabWidget()
+        stage_tabs.setDocumentMode(True)
+
+        opto_tab = QWidget()
+        opto_layout = QGridLayout(opto_tab)
+        opto_layout.setContentsMargins(6, 6, 6, 6)
+        opto_layout.setSpacing(4)
+
+        self.current_angle_display = QLabel("Current: --.-°")
+        self.current_angle_display.setStyleSheet("font-weight: bold;")
         self.refresh_angle_button = QPushButton("Refresh")
+        self.refresh_angle_button.setFixedWidth(70)
         self.refresh_angle_button.clicked.connect(self.update_current_angle)
-        current_angle_layout.addWidget(self.current_angle_display)
-        current_angle_layout.addWidget(self.refresh_angle_button)
-        rotation_layout.addLayout(current_angle_layout)
 
-        set_angle_layout = QFormLayout()
+        opto_layout.addWidget(self.current_angle_display,  0, 0, 1, 2)
+        opto_layout.addWidget(self.refresh_angle_button,   0, 2)
+
         self.set_angle_input = QDoubleSpinBox()
         self.set_angle_input.setRange(-360.0, 360.0)
         self.set_angle_input.setDecimals(2)
         self.set_angle_input.setValue(self.controller.last_angle)
-        self.go_to_angle_button = QPushButton("Go to Angle")
+        self.go_to_angle_button = QPushButton("Go")
+        self.go_to_angle_button.setFixedWidth(50)
         self.go_to_angle_button.clicked.connect(self.do_go_to_angle)
-        set_angle_layout.addRow("Set Angle (deg):", self.set_angle_input)
-        set_angle_layout.addRow(self.go_to_angle_button)
-        rotation_layout.addLayout(set_angle_layout)
+
+        opto_layout.addWidget(QLabel("Target (°):"),       1, 0)
+        opto_layout.addWidget(self.set_angle_input,        1, 1)
+        opto_layout.addWidget(self.go_to_angle_button,     1, 2)
 
         self.return_to_origin_button = QPushButton("Return to Origin (0°)")
         self.return_to_origin_button.clicked.connect(self.do_return_to_origin)
-        rotation_layout.addWidget(self.return_to_origin_button)
-        rotation_widget.setLayout(rotation_layout)
+        opto_layout.addWidget(self.return_to_origin_button, 2, 0, 1, 3)
 
-        # ── Thorlabs K10CR2 rotation mount ────────────────────────────
-        thorlabs_widget = QGroupBox("Thorlabs K10CR2 Rotation Mount")
-        thorlabs_layout = QVBoxLayout()
+        opto_layout.setColumnStretch(1, 1)
 
-        # Status row with connect/disconnect buttons
-        tl_top_layout = QHBoxLayout()
+        tl_tab = QWidget()
+        tl_layout = QGridLayout(tl_tab)
+        tl_layout.setContentsMargins(6, 6, 6, 6)
+        tl_layout.setSpacing(4)
+
         self.thorlabs_status_label = QLabel("Status: not connected")
         self.thorlabs_status_label.setStyleSheet("color: grey;")
         self.thorlabs_connect_button = QPushButton("Connect")
+        self.thorlabs_connect_button.setFixedWidth(80)
         self.thorlabs_connect_button.clicked.connect(self.do_thorlabs_connect)
         self.thorlabs_disconnect_button = QPushButton("Disconnect")
+        self.thorlabs_disconnect_button.setFixedWidth(80)
         self.thorlabs_disconnect_button.clicked.connect(self.do_thorlabs_disconnect)
         self.thorlabs_disconnect_button.setEnabled(False)
-        tl_top_layout.addWidget(self.thorlabs_status_label)
-        tl_top_layout.addStretch()
-        tl_top_layout.addWidget(self.thorlabs_connect_button)
-        tl_top_layout.addWidget(self.thorlabs_disconnect_button)
-        thorlabs_layout.addLayout(tl_top_layout)
 
-        # Current angle display
-        tl_current_layout = QHBoxLayout()
-        self.thorlabs_angle_display = QLabel("Current Angle: --.-°")
+        tl_layout.addWidget(self.thorlabs_status_label,      0, 0, 1, 2)
+        tl_btn_row = QHBoxLayout()
+        tl_btn_row.addWidget(self.thorlabs_connect_button)
+        tl_btn_row.addWidget(self.thorlabs_disconnect_button)
+        tl_btn_container = QWidget()
+        tl_btn_container.setLayout(tl_btn_row)
+        tl_layout.addWidget(tl_btn_container,                 0, 2)
+
+        self.thorlabs_angle_display = QLabel("Current: --.-°")
+        self.thorlabs_angle_display.setStyleSheet("font-weight: bold;")
         self.thorlabs_refresh_button = QPushButton("Refresh")
+        self.thorlabs_refresh_button.setFixedWidth(70)
         self.thorlabs_refresh_button.clicked.connect(self.update_thorlabs_angle)
-        tl_current_layout.addWidget(self.thorlabs_angle_display)
-        tl_current_layout.addWidget(self.thorlabs_refresh_button)
-        thorlabs_layout.addLayout(tl_current_layout)
 
-        # Target angle + move
-        tl_set_layout = QFormLayout()
+        tl_layout.addWidget(self.thorlabs_angle_display,     1, 0, 1, 2)
+        tl_layout.addWidget(self.thorlabs_refresh_button,    1, 2)
+
         self.thorlabs_angle_input = QDoubleSpinBox()
         self.thorlabs_angle_input.setRange(0.0, 360.0)
         self.thorlabs_angle_input.setDecimals(3)
         self.thorlabs_angle_input.setValue(0.0)
-        self.thorlabs_go_button = QPushButton("Go to Angle")
+        self.thorlabs_go_button = QPushButton("Go")
+        self.thorlabs_go_button.setFixedWidth(50)
         self.thorlabs_go_button.clicked.connect(self.do_thorlabs_go_to_angle)
-        tl_set_layout.addRow("Set Angle (deg):", self.thorlabs_angle_input)
-        tl_set_layout.addRow(self.thorlabs_go_button)
-        thorlabs_layout.addLayout(tl_set_layout)
 
-        # Home button
+        tl_layout.addWidget(QLabel("Target (°):"),           2, 0)
+        tl_layout.addWidget(self.thorlabs_angle_input,       2, 1)
+        tl_layout.addWidget(self.thorlabs_go_button,         2, 2)
+
         self.thorlabs_home_button = QPushButton("Home Stage")
         self.thorlabs_home_button.clicked.connect(self.do_thorlabs_home)
-        thorlabs_layout.addWidget(self.thorlabs_home_button)
+        tl_layout.addWidget(self.thorlabs_home_button,        3, 0, 1, 3)
 
-        thorlabs_widget.setLayout(thorlabs_layout)
+        tl_layout.setColumnStretch(1, 1)
 
-        # Auto-update UI if already connected at startup
+        stage_tabs.addTab(opto_tab, "OptoSigma")
+        stage_tabs.addTab(tl_tab,   "Thorlabs K10CR2")
+        stages_outer.addWidget(stage_tabs)
+
         if (self.controller.thorlabs_stage is not None
                 and self.controller.thorlabs_stage.is_connected):
             self._thorlabs_connect_ok()
 
-        # ── Assemble controls pane ────────────────────────────────────
-        self.inputs.layout().addWidget(grating_widget)
-        self.inputs.layout().addWidget(scan_count_widget)
-        self.inputs.layout().addWidget(rotation_widget)
-        self.inputs.layout().addWidget(thorlabs_widget)
+        self.inputs.layout().insertWidget(0, row1)
+        self.inputs.layout().addWidget(stages_group)
 
         self.setup_tools_ui()
         self.inputs.layout().addWidget(self.tools_group)
@@ -232,34 +245,28 @@ class MainWindow(ManagedWindow):
         self.file_input.extensions = ['csv']
 
         self.update_current_angle()
-
-        # Temperature polling timer
         self.temp_timer = QTimer()
         self.temp_timer.timeout.connect(self.trigger_temperature_update)
         self.temp_timer.start(5000)
 
-    # ── Tools UI ──────────────────────────────────────────────────────
-
     def setup_tools_ui(self):
         self.tools_group = QGroupBox("Tools")
-        tools_layout = QVBoxLayout()
+        tools_layout = QHBoxLayout()
+        tools_layout.setContentsMargins(6, 6, 6, 6)
+        tools_layout.setSpacing(8)
 
         self.temp_label = QLabel("CCD Temp: -- °C")
-        self.temp_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #333;")
-        tools_layout.addWidget(self.temp_label)
+        self.temp_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        tools_layout.addWidget(self.temp_label, stretch=1)
 
-        btn_layout = QHBoxLayout()
         self.btn_rtc   = QPushButton("RTC")
         self.btn_rtc.clicked.connect(lambda: self.launch_external_tool("rtc.py"))
         self.btn_image = QPushButton("Image Scan")
         self.btn_image.clicked.connect(lambda: self.launch_external_tool("image.py"))
-        btn_layout.addWidget(self.btn_rtc)
-        btn_layout.addWidget(self.btn_image)
-        tools_layout.addLayout(btn_layout)
+        tools_layout.addWidget(self.btn_rtc)
+        tools_layout.addWidget(self.btn_image)
 
         self.tools_group.setLayout(tools_layout)
-
-    # ── CCD temperature ───────────────────────────────────────────────
 
     def trigger_temperature_update(self):
         if not self.controller or not self.controller.is_connected:
@@ -287,8 +294,6 @@ class MainWindow(ManagedWindow):
             self.temp_label.setText(
                 f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>"
             )
-
-    # ── OptoSigma angle control ───────────────────────────────────────
 
     def update_current_angle(self):
         future = asyncio.run_coroutine_threadsafe(
@@ -326,22 +331,18 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_angle_result)
 
-    # ── Thorlabs angle control ────────────────────────────────────────
-
     def do_thorlabs_connect(self):
-        """Connect to Thorlabs K10CR2 (serial 55508504) in a background thread."""
         self.thorlabs_connect_button.setEnabled(False)
         self.thorlabs_status_label.setText("Status: connecting…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
 
         def _connect_thread():
             try:
-                # Support both possible class names in thorlabscontroller.py
                 import thorlabscontroller as _tlmod
                 _cls = getattr(_tlmod, 'ThorlabsK10CR2Controller',
                                getattr(_tlmod, 'ThorlabsK10CR1Controller', None))
                 if _cls is None:
-                    raise ImportError("No ThorlabsK10CR1/2Controller class found in thorlabscontroller.py")
+                    raise ImportError("no thorlabs controller class found in thorlabscontroller.py")
                 stage = _cls(serial_number="55508504")
                 ok = stage.connect()
                 if ok:
@@ -445,8 +446,6 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(_done)
 
-    # ── External tool launcher ────────────────────────────────────────
-
     def launch_external_tool(self, script_name):
         if hasattr(self, 'timer') and self.timer.isActive():
             self.timer.stop()
@@ -482,8 +481,6 @@ class MainWindow(ManagedWindow):
         if hasattr(self, 'timer') and not self.timer.isActive():
             self.timer.start()
 
-    # ── Sequencer collapsible wrapper ─────────────────────────────────
-
     def _make_sequencer_collapsible(self):
         from pymeasure.display.widgets import SequencerWidget
         from PyQt5.QtWidgets import QDockWidget
@@ -518,8 +515,6 @@ class MainWindow(ManagedWindow):
                     else:
                         parent_layout.addWidget(self._sequencer_collapsible)
 
-    # ── Event loop helpers ────────────────────────────────────────────
-
     def _start_event_loop(self):
         def run_loop(loop):
             asyncio.set_event_loop(loop)
@@ -539,12 +534,8 @@ class MainWindow(ManagedWindow):
             logger.error(f"Error running async task: {e}")
             raise
 
-    # ── Grating ───────────────────────────────────────────────────────
-
     def update_grating(self, text):
         logger.info(f"Grating changed to {text}")
-
-    # ── Procedure factory ─────────────────────────────────────────────
 
     def make_procedure(self, rotation_angle=None):
         procedure = self.procedure_class()
@@ -566,14 +557,9 @@ class MainWindow(ManagedWindow):
             procedure.rotation_angle = self.set_angle_input.value()
 
         procedure.grating = self.grating_combo.currentText()
-
-        # Pass current Thorlabs angle so the procedure can relay it to the
-        # controller's acquire_spectrum call via the extra kwarg.
         procedure.thorlabs_angle = self.thorlabs_angle_input.value()
 
         return procedure
-
-    # ── Queue ─────────────────────────────────────────────────────────
 
     def queue(self, procedure=None):
         if procedure is None:

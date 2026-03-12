@@ -8,7 +8,6 @@ from horiba_sdk.core.acquisition_format import AcquisitionFormat
 from horiba_sdk.core.x_axis_conversion_type import XAxisConversionType
 from optosigmacontroller import OptoSigmaController
 
-# Thorlabs controller is optional – only imported if requested
 try:
     from thorlabscontroller import ThorlabsK10CR2Controller
     _THORLABS_AVAILABLE = True
@@ -20,10 +19,8 @@ class HoribaController:
     def __init__(
         self,
         enable_logging: bool = True,
-        # ── OptoSigma rotation stage ───────────────────────────────────
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
-        # ── Thorlabs K10CR2 rotation mount ───────────────────
 
     ):
         if not enable_logging:
@@ -41,7 +38,6 @@ class HoribaController:
             'mirror': None
         }
 
-        # ── OptoSigma stage ──────────────────────────────────────────
         self.rotation_stage: OptoSigmaController | None = None
         self.enable_rotation_stage = enable_rotation_stage
         self.last_angle = 0.0
@@ -57,15 +53,10 @@ class HoribaController:
             else:
                 logger.warning("failed to connect to OptoSigma rotation stage")
 
-        # ── Thorlabs K10CR2 stage ──────────────────────────
-        # Note: not connected here – GUI calls do_thorlabs_connect() after
-        # the spectrometer is up, avoiding a multi-second Kinesis init delay
-        # that would block the ICL from finding the mono/CCD.
         self.thorlabs_stage: ThorlabsK10CR2Controller | None = None
         self.enable_thorlabs_stage = False   # set True only after connect()
         self.last_thorlabs_angle = 0.0
 
-    # ── Hardware connection ───────────────────────────────────────────
 
     async def connect_hardware(self):
         """Connect to spectrometer."""
@@ -113,8 +104,6 @@ class HoribaController:
         self.is_connected = True
         logger.success("spectrometer initialisation complete")
 
-    # ── Acquisition ───────────────────────────────────────────────────
-
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
             await self.connect_hardware()
@@ -132,18 +121,14 @@ class HoribaController:
         y_size   = kwargs.get("ccd_y_size", 256)
         x_bin    = kwargs.get("ccd_x_bin", 1)
 
-        # ── Move OptoSigma stage ─────────────────────────────────────
         if rotation_angle is not None and self.enable_rotation_stage and self.rotation_stage:
             if abs(self.last_angle - rotation_angle) > 0.01:
                 self.rotation_stage.degree = rotation_angle
                 self.last_angle = rotation_angle
                 logger.info(f"OptoSigma angle → {rotation_angle}°")
 
-        # ── Move Thorlabs stage ──────────────────────────────────────
         if thorlabs_angle is not None and self.enable_thorlabs_stage and self.thorlabs_stage:
             if abs(self.last_thorlabs_angle - thorlabs_angle) > 0.001:
-                # Kinesis move is blocking on the .NET side; run in executor
-                # to avoid blocking the asyncio event loop
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: setattr(self.thorlabs_stage, 'degree', thorlabs_angle)
                 )
@@ -219,8 +204,6 @@ class HoribaController:
                 pass
             self.dm = None
 
-    # ── OptoSigma helpers ─────────────────────────────────────────────
-
     async def set_rotation_angle(self, value: float) -> None:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
             self.rotation_stage.degree = value
@@ -238,10 +221,7 @@ class HoribaController:
             self.rotation_stage.return_to_origin()
             self.last_angle = 0.0
 
-    # ── Thorlabs helpers ──────────────────────────────────────────────
-
     async def set_thorlabs_angle(self, value: float) -> None:
-        """Move the Thorlabs stage to *value* degrees (runs in executor)."""
         if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: setattr(self.thorlabs_stage, 'degree', value)
@@ -249,21 +229,17 @@ class HoribaController:
             self.last_thorlabs_angle = self.thorlabs_stage.degree
 
     async def get_thorlabs_angle(self) -> float:
-        """Return current Thorlabs stage angle in degrees."""
         if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
             self.last_thorlabs_angle = self.thorlabs_stage.degree
             return self.last_thorlabs_angle
         return self.last_thorlabs_angle
 
     async def home_thorlabs_stage(self) -> None:
-        """Home the Thorlabs stage (blocking in executor)."""
         if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
             await asyncio.get_event_loop().run_in_executor(
                 None, self.thorlabs_stage.home
             )
             self.last_thorlabs_angle = 0.0
-
-    # ── CCD temperature ───────────────────────────────────────────────
 
     async def get_ccd_temperature(self) -> float:
         if self.is_connected and self.ccd:
@@ -274,8 +250,6 @@ class HoribaController:
                 return -999.0
         return 0.0
 
-    # ── Busy / wait helpers ───────────────────────────────────────────
-
     async def _wait_for_mono(self, mono: Monochromator) -> None:
         while await mono.is_busy():
             await asyncio.sleep(0.1)
@@ -284,19 +258,15 @@ class HoribaController:
         while await ccd.get_acquisition_busy():
             await asyncio.sleep(0.05)
 
-    # ── Shutdown ──────────────────────────────────────────────────────
-
     async def shutdown(self) -> None:
         logger.info("Shutting down hardware...")
 
-        # OptoSigma
         if self.enable_rotation_stage and self.rotation_stage:
             try:
                 self.rotation_stage.disconnect()
             except Exception:
                 pass
 
-        # Thorlabs
         if self.enable_thorlabs_stage and self.thorlabs_stage:
             try:
                 await asyncio.get_event_loop().run_in_executor(
