@@ -52,15 +52,20 @@ class OptoSigmaController:
     @property
     def degree(self) -> float:
         if not self.is_connected:
+            logger.warning("Attempted to read degree while disconnected - returning 0")
             return 0.0
         try:
             self._update_current_position()
+            if self._current_position is None:
+                logger.error("Position read returned None")
+                return 0.0
             deg = (self._current_position % (self.max_degree / self.degree_per_pulse)) * self.degree_per_pulse
+            logger.debug(f"Read position: {self._current_position} pulses = {deg:.2f}°")
             return deg
         except Exception as e:
             logger.error(f"failed to get degree: {str(e)}")
             return 0.0
-    
+        
     @degree.setter
     def degree(self, target_degree: float):
         if not self.is_connected:

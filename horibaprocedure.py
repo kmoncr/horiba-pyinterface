@@ -54,7 +54,8 @@ class HoribaSpectrumProcedure(Procedure):
     gain = ListParameter("Gain", choices=GAIN_CHOICES.keys(), default='Best Dynamic Range')
     speed = ListParameter("Speed", choices=SPEED_CHOICES.keys(), default='50 kHz')
     grating = ListParameter("Grating", choices=GRATING_CHOICES.keys(), default='Third (150 grooves/mm)')
-    rotation_angle = FloatParameter("Rotation Angle", units="deg") 
+    rotation_angle = FloatParameter("Rotation Angle", units="deg")
+    thorlabs_angle = FloatParameter("Thorlabs Angle", units="deg", default=0.0)
     scan_number = IntegerParameter("Scan Number", default=1, minimum=1)
     ccd_y_origin = IntegerParameter("CCD Y Origin", units="px", default= 0, minimum=0)
     ccd_y_size = IntegerParameter("CCD Y Size", units="px", default= 256, minimum=0)
@@ -94,11 +95,18 @@ class HoribaSpectrumProcedure(Procedure):
 
     def execute(self):
         """Execute a single measurement (one scan) at the current angle."""
-        logger.info(f"Setting rotation angle to {self.rotation_angle}° for Scan {self.scan_number}")
+        logger.info(f"Setting OptoSigma rotation angle to {self.rotation_angle}° for Scan {self.scan_number}")
         
         self.run_async(
             self.controller.set_rotation_angle(self.rotation_angle)
         )
+
+        # Move Thorlabs stage if enabled
+        if self.controller.enable_thorlabs_stage and self.controller.thorlabs_stage:
+            logger.info(f"Setting Thorlabs angle to {self.thorlabs_angle}° for Scan {self.scan_number}")
+            self.run_async(
+                self.controller.set_thorlabs_angle(self.thorlabs_angle)
+            )
 
         params = {
             'center_wavelength': self.center_wavelength,
@@ -108,12 +116,14 @@ class HoribaSpectrumProcedure(Procedure):
             'gain': self.enumconv('gain', self.gain),
             'speed': self.enumconv('speed', self.speed),
             'rotation_angle': self.rotation_angle,
+            'thorlabs_angle': self.thorlabs_angle,
             'ccd_y_origin': self.ccd_y_origin,
             'ccd_y_size': self.ccd_y_size,
             'ccd_x_bin': self.ccd_x_bin,
         }
         
-        logger.info(f"Starting acquisition for Scan {self.scan_number} at angle {self.rotation_angle}°")
+        logger.info(f"Starting acquisition for Scan {self.scan_number} "
+                     f"at OptoSigma {self.rotation_angle}°, Thorlabs {self.thorlabs_angle}°")
         
         x_data, y_data = self.run_async(
             self.controller.acquire_spectrum(**params)
@@ -138,7 +148,8 @@ class HoribaSpectrumProcedure(Procedure):
                 "Scan Number": self.scan_number
             })
         
-        logger.success(f"Completed Scan {self.scan_number} at angle {self.rotation_angle}°")
+        logger.success(f"Completed Scan {self.scan_number} at OptoSigma {self.rotation_angle}°, "
+                        f"Thorlabs {self.thorlabs_angle}°")
         
         if self.should_stop():
             logger.warning(f"Stop requested after scan {self.scan_number}. Stopping.")

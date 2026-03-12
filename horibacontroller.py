@@ -8,12 +8,21 @@ from horiba_sdk.core.acquisition_format import AcquisitionFormat
 from horiba_sdk.core.x_axis_conversion_type import XAxisConversionType
 from optosigmacontroller import OptoSigmaController
 
+try:
+    from thorlabscontroller import ThorlabsK10CR2Controller
+    _THORLABS_AVAILABLE = True
+except ImportError:
+    _THORLABS_AVAILABLE = False
+
+
 class HoribaController:
     def __init__(
         self,
         enable_logging: bool = True,
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
+        thorlabs_serial: str = "55508504",
+        enable_thorlabs_stage: bool = True,
     ):
         if not enable_logging:
             logger.remove()
@@ -22,7 +31,11 @@ class HoribaController:
         self.mono = None
         self.ccd = None
         self.is_connected = False
-        
+
+        # Guard flag: True while a scan is in progress.
+        # Prevents temperature polls from hitting the CCD mid-acquisition.
+        self._acquiring = False
+
         self._current_params = {
             'wavelength': None,
             'grating': None,
@@ -30,6 +43,7 @@ class HoribaController:
             'mirror': None
         }
 
+        # ── OptoSigma rotation stage ─────────────────────────────────
         self.rotation_stage: OptoSigmaController | None = None
         self.enable_rotation_stage = enable_rotation_stage
         self.last_angle = 0.0
@@ -37,20 +51,38 @@ class HoribaController:
         if enable_rotation_stage:
             self.rotation_stage = OptoSigmaController(port=rotation_stage_port)
             if self.rotation_stage.connect():
-                logger.info("rotation stage connected")
+                logger.info("OptoSigma rotation stage connected")
                 try:
                     self.last_angle = self.rotation_stage.degree
                 except Exception as e:
-                    logger.warning(f"could not read initial angle: {e}")
+                    logger.warning(f"could not read initial OptoSigma angle: {e}")
             else:
-                logger.warning("failed to connect to rotation stage")
+                logger.warning("failed to connect to OptoSigma rotation stage")
+
+        # ── Thorlabs K10CR2 rotation stage ────────────────────────────
+        self.thorlabs_stage: ThorlabsK10CR2Controller | None = None
+        self.enable_thorlabs_stage = False
+        self.last_thorlabs_angle = 0.0
+
+        if enable_thorlabs_stage and _THORLABS_AVAILABLE:
+            try:
+                stage = ThorlabsK10CR2Controller(serial_number=thorlabs_serial)
+                if stage.connect():
+                    self.thorlabs_stage = stage
+                    self.enable_thorlabs_stage = True
+                    self.last_thorlabs_angle = stage.degree
+                    logger.info(f"Thorlabs K10CR2 {thorlabs_serial} connected")
+                else:
+                    logger.warning("Thorlabs K10CR2 connect() returned False")
+            except Exception as e:
+                logger.warning(f"failed to connect to Thorlabs K10CR2: {e}")
 
     async def connect_hardware(self):
-        """connect to spectrometer"""
+        """Connect to spectrometer."""
         if self.is_connected:
             return
 
-        logger.info("connecting...")
+        logger.info("connecting to spectrometer...")
 
         if self.dm:
             try:
@@ -62,12 +94,19 @@ class HoribaController:
         self.dm = DeviceManager(start_icl=True)
         await self.dm.start()
 
+        logger.info("Waiting for hardware discovery...")
+
+        for _ in range(20):
+            if self.dm.monochromators and self.dm.charge_coupled_devices:
+                break
+            await asyncio.sleep(0.5)
+
         monos = self.dm.monochromators
         ccds = self.dm.charge_coupled_devices
 
         if not monos or not ccds:
             await self.dm.stop()
-            raise RuntimeError("No mono or CCD found")
+            raise RuntimeError(f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})")
 
         self.mono = monos[0]
         self.ccd = ccds[0]
@@ -80,32 +119,45 @@ class HoribaController:
         if not await self.mono.is_initialized():
             await self.mono.initialize()
             await self._wait_for_mono(self.mono)
-        
+
         self.is_connected = True
-        logger.success("initialization complete")
+        logger.success("spectrometer initialisation complete")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
             await self.connect_hardware()
 
         center_wavelength = kwargs.get("center_wavelength", 780)
-        exposure = kwargs.get("exposure", 1)
-        grating = kwargs.get("grating")
-        slit_position = kwargs.get("slit_position", 0.1)
-        gain = kwargs.get("gain", 0)
-        speed = kwargs.get("speed", 2)
-        rotation_angle = kwargs.get("rotation_angle", None)
-        
+        exposure         = kwargs.get("exposure", 1)
+        grating          = kwargs.get("grating")
+        slit_position    = kwargs.get("slit_position", 0.1)
+        gain             = kwargs.get("gain", 0)
+        speed            = kwargs.get("speed", 2)
+        rotation_angle   = kwargs.get("rotation_angle", None)
+        thorlabs_angle   = kwargs.get("thorlabs_angle", None)
+
         y_origin = kwargs.get("ccd_y_origin", 0)
-        y_size = kwargs.get("ccd_y_size", 256)
-        x_bin = kwargs.get("ccd_x_bin", 1)
+        y_size   = kwargs.get("ccd_y_size", 256)
+        x_bin    = kwargs.get("ccd_x_bin", 1)
 
+        # ── Move stages (non-blocking on event loop) ─────────────────
         if rotation_angle is not None and self.enable_rotation_stage and self.rotation_stage:
-            if abs(self.last_angle - rotation_angle) > 0.01: 
-                self.rotation_stage.degree = rotation_angle
+            if abs(self.last_angle - rotation_angle) > 0.01:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: setattr(self.rotation_stage, 'degree', rotation_angle)
+                )
                 self.last_angle = rotation_angle
-                logger.info(f"Rotation angle set to: {rotation_angle}")
+                logger.info(f"OptoSigma angle → {rotation_angle}°")
 
+        if thorlabs_angle is not None and self.enable_thorlabs_stage and self.thorlabs_stage:
+            if abs(self.last_thorlabs_angle - thorlabs_angle) > 0.001:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: setattr(self.thorlabs_stage, 'degree', thorlabs_angle)
+                )
+                self.last_thorlabs_angle = thorlabs_angle
+                logger.info(f"Thorlabs angle → {thorlabs_angle}°")
+
+        self._acquiring = True
         try:
             if self._current_params['grating'] != grating:
                 logger.debug(f"Setting grating to {grating}")
@@ -126,13 +178,15 @@ class HoribaController:
                 self._current_params['slit'] = slit_position
 
             if self._current_params['mirror'] != 'AXIAL':
-                await self.mono.set_mirror_position(self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL)
+                await self.mono.set_mirror_position(
+                    self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL
+                )
                 await self._wait_for_mono(self.mono)
                 self._current_params['mirror'] = 'AXIAL'
 
-            cfg = await self.ccd.get_configuration()
+            cfg    = await self.ccd.get_configuration()
             chip_x = int(cfg["chipWidth"])
-            
+
             await self.ccd.set_acquisition_count(1)
             await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
             await self.ccd.set_exposure_time(int(exposure * 1000))
@@ -140,18 +194,21 @@ class HoribaController:
             await self.ccd.set_speed(speed)
             await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
             await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            
-            await self.ccd.set_region_of_interest(1, 0, int(y_origin), chip_x, int(y_size), int(x_bin), int(y_size))
-            await self.ccd.set_x_axis_conversion_type(XAxisConversionType.FROM_ICL_SETTINGS_INI)
+            await self.ccd.set_region_of_interest(
+                1, 0, int(y_origin), chip_x, int(y_size), int(x_bin), int(y_size)
+            )
+            await self.ccd.set_x_axis_conversion_type(
+                XAxisConversionType.FROM_ICL_SETTINGS_INI
+            )
 
             ready = await self.ccd.get_acquisition_ready()
             if not ready:
                 raise RuntimeError("CCD not ready for acquisition")
 
             await self.ccd.acquisition_start(open_shutter=True)
-            
+
             if exposure > 0.1:
-                await asyncio.sleep(exposure * 0.9) 
+                await asyncio.sleep(exposure * 0.9)
             await self._wait_for_ccd(self.ccd)
 
             raw = await self.ccd.get_acquisition_data()
@@ -160,17 +217,82 @@ class HoribaController:
 
             return x, y
 
-        except Exception as e:
+        except Exception:
             logger.exception("failed to acquire spectrum")
-            
-            self.is_connected = False 
-            
+            self.is_connected = False
             try:
                 if self.dm:
                     await self.dm.stop()
-            except:
+            except Exception:
                 pass
-            self.dm = None 
+            self.dm = None
+        finally:
+            self._acquiring = False
+
+    # ── OptoSigma rotation stage ──────────────────────────────────────
+
+    async def set_rotation_angle(self, value: float) -> None:
+        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+            # Run the blocking serial move in a thread so the event loop
+            # stays responsive for temperature polls and GUI updates.
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: setattr(self.rotation_stage, 'degree', value)
+            )
+            self.last_angle = value
+
+    async def get_rotation_angle(self) -> float:
+        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+            self.last_angle = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.rotation_stage.degree
+            )
+            return self.last_angle
+        return self.last_angle
+
+    async def return_rotation_to_origin(self) -> None:
+        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self.rotation_stage.return_to_origin
+            )
+            self.last_angle = 0.0
+
+    # ── Thorlabs rotation stage ───────────────────────────────────────
+
+    async def set_thorlabs_angle(self, value: float) -> None:
+        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: setattr(self.thorlabs_stage, 'degree', value)
+            )
+            self.last_thorlabs_angle = self.thorlabs_stage.degree
+
+    async def get_thorlabs_angle(self) -> float:
+        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+            self.last_thorlabs_angle = self.thorlabs_stage.degree
+            return self.last_thorlabs_angle
+        return self.last_thorlabs_angle
+
+    async def home_thorlabs_stage(self) -> None:
+        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self.thorlabs_stage.home
+            )
+            self.last_thorlabs_angle = 0.0
+
+    # ── CCD temperature ───────────────────────────────────────────────
+
+    async def get_ccd_temperature(self) -> float:
+        # Skip if a scan is in progress — querying the CCD mid-acquisition
+        # can cause command collisions over the SDK socket.
+        if self._acquiring:
+            return -999.0
+        if self.is_connected and self.ccd:
+            try:
+                return await self.ccd.get_chip_temperature()
+            except Exception as e:
+                logger.warning(f"Failed to read temperature: {e}")
+                return -999.0
+        return 0.0
+
+    # ── Internal helpers ──────────────────────────────────────────────
 
     async def _wait_for_mono(self, mono: Monochromator) -> None:
         while await mono.is_busy():
@@ -180,48 +302,34 @@ class HoribaController:
         while await ccd.get_acquisition_busy():
             await asyncio.sleep(0.05)
 
-    async def set_rotation_angle(self, value: float) -> None:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
-            self.rotation_stage.degree = value
-            await asyncio.sleep(0.5)
-            self.last_angle = value
-
-    async def get_rotation_angle(self) -> float:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
-            self.last_angle = self.rotation_stage.degree
-            return self.last_angle
-        return self.last_angle 
-
-    async def return_rotation_to_origin(self) -> None:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
-            self.rotation_stage.return_to_origin()
-            self.last_angle = 0.0
-    
-    async def get_ccd_temperature(self) -> float:
-        if self.is_connected and self.ccd:
-            try:
-                temp = await self.ccd.get_chip_temperature()
-                return temp
-            except Exception as e:
-                logger.warning(f"Failed to read temperature: {e}")
-                return -999.0
-        return 0.0
-
     async def shutdown(self) -> None:
         logger.info("Shutting down hardware...")
+
         if self.enable_rotation_stage and self.rotation_stage:
             try:
                 self.rotation_stage.disconnect()
-            except:
+            except Exception:
                 pass
 
+        if self.enable_thorlabs_stage and self.thorlabs_stage:
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self.thorlabs_stage.disconnect
+                )
+            except Exception:
+                pass
+
+        # Spectrometer
         if self.is_connected:
             try:
-                if self.ccd: await self.ccd.close()
-                if self.mono: await self.mono.close()
-                if self.dm: await self.dm.stop()
+                if self.ccd:
+                    await self.ccd.close()
+                if self.mono:
+                    await self.mono.close()
+                if self.dm:
+                    await self.dm.stop()
             except Exception as e:
                 logger.error(f"error closing devices: {e}")
             self.is_connected = False
-        
+
         logger.success("shutdown complete")
