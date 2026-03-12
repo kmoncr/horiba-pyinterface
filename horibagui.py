@@ -525,24 +525,10 @@ class MainWindow(ManagedWindow):
         tl_layout.setContentsMargins(6, 6, 6, 6)
         tl_layout.setSpacing(4)
 
-        # Status + connect/disconnect
-        self.thorlabs_status_label = QLabel("Status: not connected")
-        self.thorlabs_status_label.setStyleSheet("color: grey;")
-        self.thorlabs_connect_button = QPushButton("Connect")
-        self.thorlabs_connect_button.setFixedWidth(80)
-        self.thorlabs_connect_button.clicked.connect(self.do_thorlabs_connect)
-        self.thorlabs_disconnect_button = QPushButton("Disconnect")
-        self.thorlabs_disconnect_button.setFixedWidth(80)
-        self.thorlabs_disconnect_button.clicked.connect(self.do_thorlabs_disconnect)
-        self.thorlabs_disconnect_button.setEnabled(False)
-
-        tl_layout.addWidget(self.thorlabs_status_label,      0, 0, 1, 2)
-        tl_btn_row = QHBoxLayout()
-        tl_btn_row.addWidget(self.thorlabs_connect_button)
-        tl_btn_row.addWidget(self.thorlabs_disconnect_button)
-        tl_btn_container = QWidget()
-        tl_btn_container.setLayout(tl_btn_row)
-        tl_layout.addWidget(tl_btn_container,                 0, 2)
+        # Status (auto-managed, no manual connect/disconnect)
+        self.thorlabs_status_label = QLabel("Status: initializing…")
+        self.thorlabs_status_label.setStyleSheet("color: orange;")
+        tl_layout.addWidget(self.thorlabs_status_label,      0, 0, 1, 3)
 
         # Current angle
         self.thorlabs_angle_display = QLabel("Current: --.-°")
@@ -577,10 +563,16 @@ class MainWindow(ManagedWindow):
         stage_tabs.addTab(tl_tab,   "Thorlabs K10CR2")
         stages_outer.addWidget(stage_tabs)
 
-        # Auto-update UI if already connected at startup
+        # Auto-update UI based on controller's Thorlabs state
         if (self.controller.thorlabs_stage is not None
                 and self.controller.thorlabs_stage.is_connected):
             self._thorlabs_connect_ok()
+        elif self.controller.enable_thorlabs_stage:
+            # Was enabled but failed to connect during init
+            self._thorlabs_show_failed()
+        else:
+            self.thorlabs_status_label.setText("Status: not available")
+            self.thorlabs_status_label.setStyleSheet("color: grey;")
 
         # ══════════════════════════════════════════════════════════════
         # Assemble controls pane
@@ -717,68 +709,23 @@ class MainWindow(ManagedWindow):
 
     # ── Thorlabs angle control ────────────────────────────────────────
 
-    def do_thorlabs_connect(self):
-        """Connect to Thorlabs K10CR2 (serial 55508504) in a background thread."""
-        self.thorlabs_connect_button.setEnabled(False)
-        self.thorlabs_status_label.setText("Status: connecting…")
-        self.thorlabs_status_label.setStyleSheet("color: orange;")
-
-        def _connect_thread():
-            try:
-                # Support both possible class names in thorlabscontroller.py
-                import thorlabscontroller as _tlmod
-                _cls = getattr(_tlmod, 'ThorlabsK10CR2Controller',
-                               getattr(_tlmod, 'ThorlabsK10CR1Controller', None))
-                if _cls is None:
-                    raise ImportError("No ThorlabsK10CR1/2Controller class found in thorlabscontroller.py")
-                stage = _cls(serial_number="55508504")
-                ok = stage.connect()
-                if ok:
-                    self.controller.thorlabs_stage = stage
-                    self.controller.enable_thorlabs_stage = True
-                    self.controller.last_thorlabs_angle = stage.degree
-                    QTimer.singleShot(0, self._thorlabs_connect_ok)
-                else:
-                    QTimer.singleShot(
-                        0, lambda: self._thorlabs_connect_failed("connect() returned False")
-                    )
-            except Exception as e:
-                err = str(e)
-                QTimer.singleShot(0, lambda: self._thorlabs_connect_failed(err))
-
-        threading.Thread(target=_connect_thread, daemon=True).start()
-
     def _thorlabs_connect_ok(self):
         self.thorlabs_status_label.setText("Status: connected ✓")
         self.thorlabs_status_label.setStyleSheet("color: green;")
-        self.thorlabs_connect_button.setEnabled(False)
-        self.thorlabs_disconnect_button.setEnabled(True)
         self.update_thorlabs_angle()
 
-    def _thorlabs_connect_failed(self, reason: str):
-        self.thorlabs_status_label.setText(f"Status: failed – {reason}")
-        self.thorlabs_status_label.setStyleSheet("color: red;")
-        self.thorlabs_connect_button.setEnabled(True)  # allow retry
-        QMessageBox.critical(self, "Thorlabs Connection Error",
-                             f"Could not connect to K10CR2:\n{reason}")
+    def _thorlabs_show_disconnected(self):
+        self.thorlabs_status_label.setText("Status: disconnected – reconnecting…")
+        self.thorlabs_status_label.setStyleSheet("color: orange;")
+        self.thorlabs_angle_display.setText("Current: --.-°")
 
-    def do_thorlabs_disconnect(self):
-        if self.controller.thorlabs_stage:
-            try:
-                self.controller.thorlabs_stage.disconnect()
-            except Exception as e:
-                logger.error(f"Thorlabs disconnect error: {e}")
-        self.controller.thorlabs_stage = None
-        self.controller.enable_thorlabs_stage = False
-        self.thorlabs_status_label.setText("Status: disconnected")
-        self.thorlabs_status_label.setStyleSheet("color: grey;")
-        self.thorlabs_connect_button.setEnabled(True)
-        self.thorlabs_disconnect_button.setEnabled(False)
-        self.thorlabs_angle_display.setText("Current Angle: --.-°")
+    def _thorlabs_show_failed(self):
+        self.thorlabs_status_label.setText("Status: not connected")
+        self.thorlabs_status_label.setStyleSheet("color: red;")
+        self.thorlabs_angle_display.setText("Current: --.-°")
 
     def update_thorlabs_angle(self):
-        if not (self.controller.thorlabs_stage and
-                self.controller.thorlabs_stage.is_connected):
+        if not self.controller.enable_thorlabs_stage:
             return
         future = asyncio.run_coroutine_threadsafe(
             self.controller.get_thorlabs_angle(), self.loop
@@ -789,19 +736,23 @@ class MainWindow(ManagedWindow):
         try:
             angle = fut.result()
             self.thorlabs_angle_updated_signal.emit(angle)
+            # If we got a valid angle back, the stage is alive
+            QTimer.singleShot(0, self._thorlabs_connect_ok)
         except Exception as e:
             logger.error(f"Thorlabs angle fetch error: {e}")
+            QTimer.singleShot(0, self._thorlabs_show_failed)
 
     def on_thorlabs_angle_ui_update(self, angle):
         self.thorlabs_angle_display.setText(f"Current Angle: {angle:.3f}°")
         self.thorlabs_angle_input.setValue(angle)
 
     def do_thorlabs_go_to_angle(self):
-        if not (self.controller.thorlabs_stage and
-                self.controller.thorlabs_stage.is_connected):
-            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not connected.")
+        if not self.controller.enable_thorlabs_stage:
+            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not enabled.")
             return
         target = self.thorlabs_angle_input.value()
+        self.thorlabs_status_label.setText("Status: moving…")
+        self.thorlabs_status_label.setStyleSheet("color: orange;")
 
         async def _move_and_update():
             await self.controller.set_thorlabs_angle(target)
@@ -811,9 +762,8 @@ class MainWindow(ManagedWindow):
         future.add_done_callback(self._handle_thorlabs_angle_result)
 
     def do_thorlabs_home(self):
-        if not (self.controller.thorlabs_stage and
-                self.controller.thorlabs_stage.is_connected):
-            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not connected.")
+        if not self.controller.enable_thorlabs_stage:
+            QMessageBox.information(self, "Thorlabs", "Thorlabs stage is not enabled.")
             return
         self.thorlabs_status_label.setText("Status: homing…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
@@ -822,17 +772,8 @@ class MainWindow(ManagedWindow):
             await self.controller.home_thorlabs_stage()
             return await self.controller.get_thorlabs_angle()
 
-        def _done(fut):
-            try:
-                angle = fut.result()
-                self.thorlabs_angle_updated_signal.emit(angle)
-                self.thorlabs_status_label.setText("Status: connected ✓")
-                self.thorlabs_status_label.setStyleSheet("color: green;")
-            except Exception as e:
-                logger.error(f"Thorlabs home error: {e}")
-
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
-        future.add_done_callback(_done)
+        future.add_done_callback(self._handle_thorlabs_angle_result)
 
     # ── External tool launcher ────────────────────────────────────────
 

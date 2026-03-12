@@ -21,6 +21,8 @@ class HoribaController:
         enable_logging: bool = True,
         rotation_stage_port: str = "COM3",
         enable_rotation_stage: bool = True,
+        thorlabs_serial: str = "55508504",
+        enable_thorlabs_stage: bool = True,
     ):
         if not enable_logging:
             logger.remove()
@@ -41,6 +43,7 @@ class HoribaController:
             'mirror': None
         }
 
+        # ── OptoSigma rotation stage ─────────────────────────────────
         self.rotation_stage: OptoSigmaController | None = None
         self.enable_rotation_stage = enable_rotation_stage
         self.last_angle = 0.0
@@ -56,9 +59,23 @@ class HoribaController:
             else:
                 logger.warning("failed to connect to OptoSigma rotation stage")
 
+        # ── Thorlabs K10CR2 rotation stage ────────────────────────────
         self.thorlabs_stage: ThorlabsK10CR2Controller | None = None
-        self.enable_thorlabs_stage = False   # set True only after connect()
+        self.enable_thorlabs_stage = False
         self.last_thorlabs_angle = 0.0
+
+        if enable_thorlabs_stage and _THORLABS_AVAILABLE:
+            try:
+                stage = ThorlabsK10CR2Controller(serial_number=thorlabs_serial)
+                if stage.connect():
+                    self.thorlabs_stage = stage
+                    self.enable_thorlabs_stage = True
+                    self.last_thorlabs_angle = stage.degree
+                    logger.info(f"Thorlabs K10CR2 {thorlabs_serial} connected")
+                else:
+                    logger.warning("Thorlabs K10CR2 connect() returned False")
+            except Exception as e:
+                logger.warning(f"failed to connect to Thorlabs K10CR2: {e}")
 
     async def connect_hardware(self):
         """Connect to spectrometer."""
