@@ -109,19 +109,31 @@ class LiveViewWindow(QWidget):
         plot_widget.setLayout(plot_layout)
     
         scan_box = QGroupBox("Scan Control")
+        scan_outer_layout = QVBoxLayout()
+
         scan_layout = QHBoxLayout()
         self.start_button = QPushButton("START")
         self.start_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.start_button.clicked.connect(self.start_scan)
-        
+        self.start_button.setEnabled(False)  # enabled once hardware connects
+
         self.stop_button = QPushButton("STOP")
         self.stop_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
         self.stop_button.clicked.connect(self.stop_scan)
         self.stop_button.setEnabled(False)
-        
+
         scan_layout.addWidget(self.start_button)
         scan_layout.addWidget(self.stop_button)
-        scan_box.setLayout(scan_layout)
+        scan_outer_layout.addLayout(scan_layout)
+
+        self.status_label = QLabel("Status: connecting…")
+        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+        self.temp_label = QLabel("CCD Temp: -- °C")
+        self.temp_label.setStyleSheet("font-weight: bold;")
+        scan_outer_layout.addWidget(self.status_label)
+        scan_outer_layout.addWidget(self.temp_label)
+
+        scan_box.setLayout(scan_outer_layout)
         controls_layout.addWidget(scan_box)
 
         # Acquisition-mode toggle (1-D spectrum vs 2-D image preview).
@@ -409,27 +421,16 @@ class LiveViewWindow(QWidget):
             'slit_position': self.slit_position.value(),
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
-            'rotation_angle': self.rotation_angle.value(),
             'ccd_y_origin': self.ccd_y_origin.value(),
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
         }
         return params
 
-    def go_to_angle(self):
-        if self.is_scanning:
-            logger.warning("Cannot move stage while scan is active. Stop scan first.")
-            return
-        
-        angle = self.rotation_angle.value()
-        logger.info(f"Setting rotation angle to {angle}°")
-        try:
-            self.run_async_task(self.controller.set_rotation_angle(angle))
-            logger.info("Angle set.")
-        except Exception as e:
-            logger.error(f"Failed to set angle: {e}")
-
     def start_scan(self):
+        if not self._hw_ready:
+            logger.warning("Hardware not ready — cannot start scan.")
+            return
         if self.is_scanning:
             logger.warning("Scan already running. Please stop current scan first.")
             return
@@ -531,6 +532,61 @@ class LiveViewWindow(QWidget):
         """Handle errors that occur in the scan loop"""
         logger.error(f"Scan error handler called: {error_msg}")
         self.stop_scan()
+
+    def _connect_in_background(self):
+        """Fire connect_hardware without blocking the UI. Emits connection_changed."""
+        async def _do_connect():
+            try:
+                await self.controller.connect_hardware()
+                self.connection_changed.emit(True, "connected")
+            except Exception as e:
+                logger.error(f"Hardware connection failed: {e}")
+                self.connection_changed.emit(False, str(e))
+        asyncio.run_coroutine_threadsafe(_do_connect(), self.loop)
+
+    @QtCore.pyqtSlot(bool, str)
+    def _on_connection_changed(self, ok: bool, message: str):
+        self._hw_ready = ok
+        if ok:
+            self.status_label.setText("Status: connected")
+            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.start_button.setEnabled(True)
+        else:
+            self.status_label.setText(f"Status: not connected — {message}")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.start_button.setEnabled(False)
+
+    def _trigger_temp_update(self):
+        if not self._hw_ready or not self.controller.is_connected:
+            return
+        # Don't poll the CCD mid-acquisition — controller already guards this,
+        # but skipping here avoids a queued no-op.
+        if self.is_scanning:
+            return
+        if self._temp_pending:
+            return
+        self._temp_pending = True
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.get_ccd_temperature(), self.loop
+        )
+        future.add_done_callback(self._temp_result_cb)
+
+    def _temp_result_cb(self, fut):
+        self._temp_pending = False
+        try:
+            self.temp_updated.emit(fut.result())
+        except Exception:
+            self.temp_updated.emit(-999.0)
+
+    @QtCore.pyqtSlot(float)
+    def _on_temp_update(self, temp: float):
+        if temp == -999.0:
+            self.temp_label.setText("CCD Temp: Err")
+        else:
+            color = "green" if temp < -50 else "red"
+            self.temp_label.setText(
+                f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>"
+            )
 
     @QtCore.pyqtSlot(object, object)
     def update_plot(self, x_data, y_data):
