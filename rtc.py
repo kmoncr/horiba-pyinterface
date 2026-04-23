@@ -9,7 +9,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
-    QCheckBox
+    QCheckBox, QLabel
 )
 import pyqtgraph as pg
 import numpy as np
@@ -28,7 +28,9 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
-    scan_error = QtCore.pyqtSignal(str)  
+    scan_error = QtCore.pyqtSignal(str)
+    connection_changed = QtCore.pyqtSignal(bool, str)  # (ok, message)
+    temp_updated = QtCore.pyqtSignal(float)
 
     def __init__(self):
         super().__init__()
@@ -37,16 +39,12 @@ class LiveViewWindow(QWidget):
         self.loop = None
         self.loop_thread = None
         self._start_event_loop()
-
-        logger.info("starting hardware connection...")
-        try:
-            self.run_async_task(self.controller.connect_hardware(), timeout=60)
-        except Exception as e:
-            logger.error(f"Failed to initialize hardware on startup: {e}")
         
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.is_scanning = False  
+        self.is_scanning = False
+        self._hw_ready = False
+        self._temp_pending = False
         
         self.latest_wavelength = None
         self.latest_intensity = None
@@ -69,19 +67,31 @@ class LiveViewWindow(QWidget):
         plot_widget.setLayout(plot_layout)
     
         scan_box = QGroupBox("Scan Control")
+        scan_outer_layout = QVBoxLayout()
+
         scan_layout = QHBoxLayout()
         self.start_button = QPushButton("START")
         self.start_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.start_button.clicked.connect(self.start_scan)
-        
+        self.start_button.setEnabled(False)  # enabled once hardware connects
+
         self.stop_button = QPushButton("STOP")
         self.stop_button.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
         self.stop_button.clicked.connect(self.stop_scan)
         self.stop_button.setEnabled(False)
-        
+
         scan_layout.addWidget(self.start_button)
         scan_layout.addWidget(self.stop_button)
-        scan_box.setLayout(scan_layout)
+        scan_outer_layout.addLayout(scan_layout)
+
+        self.status_label = QLabel("Status: connecting…")
+        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+        self.temp_label = QLabel("CCD Temp: -- °C")
+        self.temp_label.setStyleSheet("font-weight: bold;")
+        scan_outer_layout.addWidget(self.status_label)
+        scan_outer_layout.addWidget(self.temp_label)
+
+        scan_box.setLayout(scan_outer_layout)
         controls_layout.addWidget(scan_box)
 
         plot_options_box = QGroupBox("Plot Options")
@@ -91,6 +101,11 @@ class LiveViewWindow(QWidget):
         self.wavenumber_checkbox.setChecked(False)
         self.wavenumber_checkbox.stateChanged.connect(self.toggle_x_axis)
         plot_options_layout.addRow("Plot in Wavenumber (cm⁻¹):", self.wavenumber_checkbox)
+        
+        self.autoscale_checkbox = QCheckBox()
+        self.autoscale_checkbox.setChecked(True)
+        self.autoscale_checkbox.stateChanged.connect(self._apply_autoscale)
+        plot_options_layout.addRow("Autoscale:", self.autoscale_checkbox)
         
         plot_options_box.setLayout(plot_options_layout)
         controls_layout.addWidget(plot_options_box)
@@ -175,23 +190,6 @@ class LiveViewWindow(QWidget):
         ccd_box.setLayout(ccd_layout)
         controls_layout.addWidget(ccd_box)
 
-        rot_box = QGroupBox("Rotation Stage")
-        rot_layout = QFormLayout()
-        
-        self.rotation_angle = QDoubleSpinBox()
-        self.rotation_angle.setValue(self.controller.last_angle)
-        self.rotation_angle.setMinimum(-360)
-        self.rotation_angle.setMaximum(360)
-        self.rotation_angle.setDecimals(2)
-        self.rotation_angle.setSuffix(" deg")
-        
-        self.set_angle_button = QPushButton("Go to Angle")
-        self.set_angle_button.clicked.connect(self.go_to_angle)
-        rot_layout.addRow("Target Angle:", self.rotation_angle)
-        rot_layout.addRow(self.set_angle_button)
-        rot_box.setLayout(rot_layout)
-        controls_layout.addWidget(rot_box)
-        
         controls_layout.addStretch() 
         
         control_widget = QWidget()
@@ -203,12 +201,19 @@ class LiveViewWindow(QWidget):
         
         self.data_ready.connect(self.update_plot)
         self.scan_error.connect(self.handle_scan_error)
+        self.connection_changed.connect(self._on_connection_changed)
+        self.temp_updated.connect(self._on_temp_update)
+        self._apply_autoscale()
+
+        self._connect_in_background()
+
+        self.temp_timer = QtCore.QTimer()
+        self.temp_timer.timeout.connect(self._trigger_temp_update)
+        self.temp_timer.start(5000)
+
         logger.info("RTC GUI initialized.")
 
     def wavelength_to_wavenumber(self, wavelength_nm):
-        """
-        wavenumber = (1/λ_excitation - 1/λ_scattered) * 10^7
-        """
         excitation = self.excitation_wavelength.value()
         try:
             wavenumber = (1.0 / excitation - 1.0 / wavelength_nm) * 1e7
@@ -224,6 +229,13 @@ class LiveViewWindow(QWidget):
         
         if self.latest_wavelength is not None and self.latest_intensity is not None:
             self.update_plot(self.latest_wavelength, self.latest_intensity)
+        self._apply_autoscale()
+
+    def _apply_autoscale(self, *_):
+        vb = self.plot_item.getViewBox()
+        enable = self.autoscale_checkbox.isChecked()
+        vb.enableAutoRange(axis='x', enable=enable)
+        vb.enableAutoRange(axis='y', enable=enable)
 
     def enumconv(self, param_name: str, value: str):
         if param_name == 'grating':
@@ -261,27 +273,16 @@ class LiveViewWindow(QWidget):
             'slit_position': self.slit_position.value(),
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
-            'rotation_angle': self.rotation_angle.value(),
             'ccd_y_origin': self.ccd_y_origin.value(),
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
         }
         return params
 
-    def go_to_angle(self):
-        if self.is_scanning:
-            logger.warning("Cannot move stage while scan is active. Stop scan first.")
-            return
-        
-        angle = self.rotation_angle.value()
-        logger.info(f"Setting rotation angle to {angle}°")
-        try:
-            self.run_async_task(self.controller.set_rotation_angle(angle))
-            logger.info("Angle set.")
-        except Exception as e:
-            logger.error(f"Failed to set angle: {e}")
-
     def start_scan(self):
+        if not self._hw_ready:
+            logger.warning("Hardware not ready — cannot start scan.")
+            return
         if self.is_scanning:
             logger.warning("Scan already running. Please stop current scan first.")
             return
@@ -317,16 +318,6 @@ class LiveViewWindow(QWidget):
         logger.info("Live scan stopped.")
 
     def _scan_loop(self, params):
-        try:
-            logger.info(f"Setting angle to {params['rotation_angle']}° for scan")
-            self.run_async_task(
-                self.controller.set_rotation_angle(params['rotation_angle'])
-            )
-        except Exception as e:
-            logger.error(f"Failed to set rotation angle: {e}")
-            self.scan_error.emit(f"Failed to set rotation angle: {e}")
-            return
-
         acquisition_count = 0
         while not self.stop_event.is_set():
             try:
@@ -369,6 +360,61 @@ class LiveViewWindow(QWidget):
         logger.error(f"Scan error handler called: {error_msg}")
         self.stop_scan()
 
+    def _connect_in_background(self):
+        """Fire connect_hardware without blocking the UI. Emits connection_changed."""
+        async def _do_connect():
+            try:
+                await self.controller.connect_hardware()
+                self.connection_changed.emit(True, "connected")
+            except Exception as e:
+                logger.error(f"Hardware connection failed: {e}")
+                self.connection_changed.emit(False, str(e))
+        asyncio.run_coroutine_threadsafe(_do_connect(), self.loop)
+
+    @QtCore.pyqtSlot(bool, str)
+    def _on_connection_changed(self, ok: bool, message: str):
+        self._hw_ready = ok
+        if ok:
+            self.status_label.setText("Status: connected")
+            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.start_button.setEnabled(True)
+        else:
+            self.status_label.setText(f"Status: not connected — {message}")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.start_button.setEnabled(False)
+
+    def _trigger_temp_update(self):
+        if not self._hw_ready or not self.controller.is_connected:
+            return
+        # Don't poll the CCD mid-acquisition — controller already guards this,
+        # but skipping here avoids a queued no-op.
+        if self.is_scanning:
+            return
+        if self._temp_pending:
+            return
+        self._temp_pending = True
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.get_ccd_temperature(), self.loop
+        )
+        future.add_done_callback(self._temp_result_cb)
+
+    def _temp_result_cb(self, fut):
+        self._temp_pending = False
+        try:
+            self.temp_updated.emit(fut.result())
+        except Exception:
+            self.temp_updated.emit(-999.0)
+
+    @QtCore.pyqtSlot(float)
+    def _on_temp_update(self, temp: float):
+        if temp == -999.0:
+            self.temp_label.setText("CCD Temp: Err")
+        else:
+            color = "green" if temp < -50 else "red"
+            self.temp_label.setText(
+                f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>"
+            )
+
     @QtCore.pyqtSlot(object, object)
     def update_plot(self, x_data, y_data):
         try:
@@ -387,6 +433,8 @@ class LiveViewWindow(QWidget):
 
     def closeEvent(self, event):
         logger.info("Closing application...")
+        if hasattr(self, 'temp_timer'):
+            self.temp_timer.stop()
         self.stop_scan()
         
         try:

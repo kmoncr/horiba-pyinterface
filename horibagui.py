@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import threading
+import time
 from time import sleep
 from loguru import logger
 
@@ -26,9 +27,6 @@ try:
 except ImportError:
     logger.critical("failed to import horibacontroller")
     sys.exit(1)
-
-
-# ── CollapsibleSection ────────────────────────────────────────────────────────
 
 class CollapsibleSection(QWidget):
     def __init__(self, title="", parent=None, start_collapsed=False):
@@ -75,20 +73,14 @@ class CollapsibleSection(QWidget):
         widget.setVisible(True)
         self._content_container.setVisible(not self._is_collapsed)
 
-
-# ── PopupSequencerButton ──────────────────────────────────────────────────────
-
 class PopupSequencerButton(QWidget):
-    """
-    A header button that sits at the bottom of the panel in the normal flow.
-    When clicked it opens a frameless QDialog anchored above the button.
-    """
     def __init__(self, content_widget: QWidget, title: str = "Dual-Stage Synchronized Sequence", parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._btn = QPushButton(f"▲  {title}")
+        self._title = title
+        self._btn = QPushButton()
         self._btn.setStyleSheet("""
             QPushButton {
                 text-align: left; padding: 8px; font-weight: bold;
@@ -101,66 +93,59 @@ class PopupSequencerButton(QWidget):
         layout.addWidget(self._btn)
 
         self._content_widget = content_widget
-        self._dialog = None
-        self._open = False
+        self._popup = None
+        self._last_hide = 0.0
+        self._refresh_label(is_open=False)
 
-    def _build_dialog(self):
-        # Use Qt.Dialog | Qt.FramelessWindowHint instead of
-        # Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint.
-        # Qt.Tool windows are passive and don't receive input focus properly
-        # on many platforms, causing clicks to be ignored.
-        dlg = QDialog(self.window(), Qt.Dialog | Qt.FramelessWindowHint)
-        dlg.setStyleSheet("QDialog { border: 2px solid #4a86c7; background: white; }")
+    def _refresh_label(self, is_open: bool):
+        arrow = "▼" if is_open else "▲"
+        self._btn.setText(f"{arrow}  {self._title}")
 
-        # Ensure the dialog accepts focus and input
-        dlg.setFocusPolicy(Qt.StrongFocus)
-        dlg.setAttribute(Qt.WA_ShowWithoutActivating, False)
+    def _build_popup(self):
+        popup = QWidget(self, Qt.Popup | Qt.FramelessWindowHint)
+        popup.setStyleSheet("""
+            QWidget#seqPopupRoot { border: 2px solid #4a86c7; background: white; }
+        """)
+        popup.setObjectName("seqPopupRoot")
 
-        dlg_layout = QVBoxLayout(dlg)
-        dlg_layout.setContentsMargins(4, 4, 4, 4)
-        self._content_widget.setParent(dlg)
-        dlg_layout.addWidget(self._content_widget)
-        dlg.setFixedWidth(max(self._btn.width(), 460))
-        dlg.adjustSize()
-        return dlg
+        original_hide_event = popup.hideEvent
+        def hide_event(ev):
+            self._last_hide = time.monotonic()
+            self._refresh_label(is_open=False)
+            original_hide_event(ev)
+        popup.hideEvent = hide_event
+
+        popup_layout = QVBoxLayout(popup)
+        popup_layout.setContentsMargins(4, 4, 4, 4)
+        self._content_widget.setParent(popup)
+        popup_layout.addWidget(self._content_widget)
+        return popup
 
     def _toggle_popup(self):
-        if self._open and self._dialog and self._dialog.isVisible():
-            self._dialog.hide()
-            self._btn.setText(self._btn.text().replace("▼", "▲"))
-            self._open = False
-        else:
-            if self._dialog is None:
-                self._dialog = self._build_dialog()
-            self._reposition()
-            self._dialog.show()
-            self._dialog.raise_()
-            self._dialog.activateWindow()   # ensure the dialog gets input focus
-            self._btn.setText(self._btn.text().replace("▲", "▼"))
-            self._open = True
-
-    def _reposition(self):
-        if self._dialog is None:
+        if self._popup is not None and self._popup.isVisible():
+            self._popup.hide()
+            self._refresh_label(is_open=False)
             return
+        
+        if time.monotonic() - self._last_hide < 0.15:
+            return
+
+        if self._popup is None:
+            self._popup = self._build_popup()
+
+        self._popup.adjustSize()
+        w = max(self._btn.width(), 460)
+        h = max(self._popup.sizeHint().height(), 200)
+        self._popup.resize(w, h)
+
         btn_global = self._btn.mapToGlobal(self._btn.rect().topLeft())
-        self._dialog.setFixedWidth(max(self._btn.width(), 460))
-        self._dialog.adjustSize()
-        popup_h = self._dialog.sizeHint().height()
-        if popup_h < 200:
-            popup_h = 550
-        self._dialog.resize(self._dialog.width(), popup_h)
-        self._dialog.move(btn_global.x(), btn_global.y() - popup_h - 4)
+        self._popup.move(btn_global.x(), btn_global.y() - h - 4)
 
+        self._popup.show()
+        self._refresh_label(is_open=True)
 
-# ── DualStageSequencer ────────────────────────────────────────────────────────
 
 class StageSequenceEditor(QWidget):
-    """
-    Editor for one stage's angle sequence.
-    Supports two modes:
-      • Sweep  – start / stop / step
-      • Manual – comma-separated list of angles
-    """
 
     sequence_changed = pyqtSignal()
 
@@ -184,7 +169,6 @@ class StageSequenceEditor(QWidget):
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
-        # ── Sweep controls ──────────────────────────────────────────
         self._sweep_widget = QWidget()
         sweep_form = QFormLayout(self._sweep_widget)
         sweep_form.setContentsMargins(0, 0, 0, 0)
@@ -208,7 +192,6 @@ class StageSequenceEditor(QWidget):
         sweep_form.addRow("Step (°):",  self._step_spin)
         layout.addWidget(self._sweep_widget)
 
-        # ── Manual controls ─────────────────────────────────────────
         self._manual_widget = QWidget()
         manual_layout = QVBoxLayout(self._manual_widget)
         manual_layout.setContentsMargins(0, 0, 0, 0)
@@ -228,7 +211,6 @@ class StageSequenceEditor(QWidget):
         self.sequence_changed.emit()
 
     def angles(self) -> list[float]:
-        """Return the list of angles defined by the current mode."""
         if self._sweep_radio.isChecked():
             start = self._start_spin.value()
             stop  = self._stop_spin.value()
@@ -261,17 +243,6 @@ class StageSequenceEditor(QWidget):
 
 
 class DualStageSequencer(QWidget):
-    """
-    Widget that defines independent angle sequences for the OptoSigma and
-    Thorlabs stages, pairs them up, previews the result, and queues all
-    scans in one click.
-
-    Pairing modes
-    ─────────────
-    • Zip      – step both simultaneously (stops at the shorter list).
-    • Product  – every (opto, thorlabs) combination (Cartesian product).
-    • Opto only / Thorlabs only – ignore the other stage's list.
-    """
 
     run_requested = pyqtSignal(list)   # emits list of (opto_angle, tl_angle) tuples
 
@@ -281,7 +252,6 @@ class DualStageSequencer(QWidget):
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(6)
 
-        # ── Top: two side-by-side editors ───────────────────────────
         editors_row = QHBoxLayout()
 
         opto_group = QGroupBox("OptoSigma Angles")
@@ -300,11 +270,10 @@ class DualStageSequencer(QWidget):
         editors_row.addWidget(tl_group)
         outer.addLayout(editors_row)
 
-        # ── Pairing mode ─────────────────────────────────────────────
         pair_row = QHBoxLayout()
         pair_row.addWidget(QLabel("Pair mode:"))
         self._pair_combo = QComboBox()
-        self._pair_combo.addItems(["Zip (simultaneous)",
+        self._pair_combo.addItems(["Simultaneous",
                                    "OptoSigma only", "Thorlabs only"])
         self._pair_combo.currentIndexChanged.connect(self._refresh_preview)
         pair_row.addWidget(self._pair_combo)
@@ -318,7 +287,6 @@ class DualStageSequencer(QWidget):
         pair_row.addStretch()
         outer.addLayout(pair_row)
 
-        # ── Preview table ─────────────────────────────────────────────
         outer.addWidget(QLabel("Sequence preview  (each row = one set of scans):"))
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Step", "OptoSigma (°)", "Thorlabs (°)"])
@@ -332,7 +300,6 @@ class DualStageSequencer(QWidget):
         self._step_count_label.setStyleSheet("color: #555; font-style: italic;")
         outer.addWidget(self._step_count_label)
 
-        # ── Run button ────────────────────────────────────────────────
         self._run_btn = QPushButton("▶  Run Dual Sequence")
         self._run_btn.setMinimumHeight(36)
         self._run_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -350,7 +317,6 @@ class DualStageSequencer(QWidget):
 
         self._refresh_preview()
 
-    # ── Internal helpers ──────────────────────────────────────────────
 
     def _build_steps(self) -> list[tuple[float, float]]:
         """Return the list of (opto_angle, tl_angle) step pairs."""
@@ -397,8 +363,6 @@ class DualStageSequencer(QWidget):
         return self._scans_spin.value()
 
 
-# ── MainWindow ────────────────────────────────────────────────────────────────
-
 class MainWindow(ManagedWindow):
 
     temp_updated_signal         = pyqtSignal(float)
@@ -434,7 +398,6 @@ class MainWindow(ManagedWindow):
         self.loop_thread = None
         self._start_event_loop()
 
-        # ── Controller (Thorlabs disabled by default) ─────────────────
         self.controller = HoribaController(enable_logging=True)
 
         try:
@@ -444,15 +407,11 @@ class MainWindow(ManagedWindow):
             QMessageBox.critical(self, "Connection Error",
                                  f"Failed to connect to hardware:\n{e}")
 
-        # ══════════════════════════════════════════════════════════════
-        # ROW 1 — Grating  +  Scan count  (side by side)
-        # ══════════════════════════════════════════════════════════════
         row1 = QWidget()
         row1_layout = QHBoxLayout(row1)
         row1_layout.setContentsMargins(0, 0, 0, 0)
         row1_layout.setSpacing(6)
 
-        # ── Grating ───────────────────────────────────────────────────
         grating_widget = QGroupBox("Grating")
         grating_layout = QFormLayout()
         grating_layout.setContentsMargins(6, 6, 6, 6)
@@ -463,7 +422,6 @@ class MainWindow(ManagedWindow):
         grating_layout.addRow("Grating:", self.grating_combo)
         grating_widget.setLayout(grating_layout)
 
-        # ── Scan count ────────────────────────────────────────────────
         scan_count_widget = QGroupBox("Scan Sequence")
         scan_count_layout = QFormLayout()
         scan_count_layout.setContentsMargins(6, 6, 6, 6)
@@ -476,9 +434,6 @@ class MainWindow(ManagedWindow):
         row1_layout.addWidget(grating_widget, stretch=3)
         row1_layout.addWidget(scan_count_widget, stretch=2)
 
-        # ══════════════════════════════════════════════════════════════
-        # ROW 2 — Rotation stages in a tab widget
-        # ══════════════════════════════════════════════════════════════
         stages_group = QGroupBox("Rotation Stages")
         stages_outer = QVBoxLayout(stages_group)
         stages_outer.setContentsMargins(4, 4, 4, 4)
@@ -486,7 +441,6 @@ class MainWindow(ManagedWindow):
         stage_tabs = QTabWidget()
         stage_tabs.setDocumentMode(True)
 
-        # ── Tab 1: OptoSigma ──────────────────────────────────────────
         opto_tab = QWidget()
         opto_layout = QGridLayout(opto_tab)
         opto_layout.setContentsMargins(6, 6, 6, 6)
@@ -519,18 +473,15 @@ class MainWindow(ManagedWindow):
 
         opto_layout.setColumnStretch(1, 1)
 
-        # ── Tab 2: Thorlabs ───────────────────────────────────────────
         tl_tab = QWidget()
         tl_layout = QGridLayout(tl_tab)
         tl_layout.setContentsMargins(6, 6, 6, 6)
         tl_layout.setSpacing(4)
 
-        # Status (auto-managed, no manual connect/disconnect)
         self.thorlabs_status_label = QLabel("Status: initializing…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
         tl_layout.addWidget(self.thorlabs_status_label,      0, 0, 1, 3)
 
-        # Current angle
         self.thorlabs_angle_display = QLabel("Current: --.-°")
         self.thorlabs_angle_display.setStyleSheet("font-weight: bold;")
         self.thorlabs_refresh_button = QPushButton("Refresh")
@@ -540,7 +491,6 @@ class MainWindow(ManagedWindow):
         tl_layout.addWidget(self.thorlabs_angle_display,     1, 0, 1, 2)
         tl_layout.addWidget(self.thorlabs_refresh_button,    1, 2)
 
-        # Target + go
         self.thorlabs_angle_input = QDoubleSpinBox()
         self.thorlabs_angle_input.setRange(0.0, 360.0)
         self.thorlabs_angle_input.setDecimals(3)
@@ -563,7 +513,6 @@ class MainWindow(ManagedWindow):
         stage_tabs.addTab(tl_tab,   "Thorlabs K10CR2")
         stages_outer.addWidget(stage_tabs)
 
-        # Auto-update UI based on controller's Thorlabs state
         if (self.controller.thorlabs_stage is not None
                 and self.controller.thorlabs_stage.is_connected):
             self._thorlabs_connect_ok()
@@ -574,9 +523,6 @@ class MainWindow(ManagedWindow):
             self.thorlabs_status_label.setText("Status: not available")
             self.thorlabs_status_label.setStyleSheet("color: grey;")
 
-        # ══════════════════════════════════════════════════════════════
-        # Assemble controls pane
-        # ══════════════════════════════════════════════════════════════
         self.inputs.layout().insertWidget(0, row1)
         self.inputs.layout().addWidget(stages_group)
 
@@ -585,8 +531,6 @@ class MainWindow(ManagedWindow):
 
         self.file_input.extensions = ['csv']
 
-        # Insert sequencer below the Queue/Abort buttons after pymeasure
-        # has finished building the rest of the panel.
         self._dual_seq = DualStageSequencer()
         self._dual_seq.run_requested.connect(self._on_dual_sequence_run)
         self._dual_seq_section = PopupSequencerButton(self._dual_seq)
@@ -594,13 +538,10 @@ class MainWindow(ManagedWindow):
 
         self.update_current_angle()
 
-        # Temperature polling timer
         self._temp_pending = False   # prevents stacking temp requests
         self.temp_timer = QTimer()
         self.temp_timer.timeout.connect(self.trigger_temperature_update)
         self.temp_timer.start(5000)
-
-    # ── Tools UI ──────────────────────────────────────────────────────
 
     def setup_tools_ui(self):
         self.tools_group = QGroupBox("Tools")
@@ -622,9 +563,6 @@ class MainWindow(ManagedWindow):
         self.tools_group.setLayout(tools_layout)
 
     def _insert_sequencer_at_bottom(self):
-        """Append the dual-stage sequencer below the Queue/Abort buttons."""
-        # Walk up from file_input to find the nearest QVBoxLayout that
-        # contains it, then append our section at the end.
         parent = self.file_input.parent()
         while parent is not None:
             layout = parent.layout()
@@ -635,7 +573,6 @@ class MainWindow(ManagedWindow):
         # Fallback: just add to inputs
         self.inputs.layout().addWidget(self._dual_seq_section)
 
-    # ── CCD temperature ───────────────────────────────────────────────
 
     def trigger_temperature_update(self):
         if not self.controller or not self.controller.is_connected:
@@ -643,7 +580,6 @@ class MainWindow(ManagedWindow):
             return
         if hasattr(self, 'manager') and self.manager.is_running():
             return
-        # Don't stack another request if the previous one hasn't returned yet
         if self._temp_pending:
             return
         self._temp_pending = True
@@ -669,7 +605,6 @@ class MainWindow(ManagedWindow):
                 f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>"
             )
 
-    # ── OptoSigma angle control ───────────────────────────────────────
 
     def update_current_angle(self):
         future = asyncio.run_coroutine_threadsafe(
@@ -707,10 +642,9 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_angle_result)
 
-    # ── Thorlabs angle control ────────────────────────────────────────
 
     def _thorlabs_connect_ok(self):
-        self.thorlabs_status_label.setText("Status: connected ✓")
+        self.thorlabs_status_label.setText("Status: connected")
         self.thorlabs_status_label.setStyleSheet("color: green;")
         self.update_thorlabs_angle()
 
@@ -775,11 +709,18 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_thorlabs_angle_result)
 
-    # ── External tool launcher ────────────────────────────────────────
 
     def launch_external_tool(self, script_name):
-        if hasattr(self, 'timer') and self.timer.isActive():
-            self.timer.stop()
+        if hasattr(self, 'temp_timer') and self.temp_timer.isActive():
+            self.temp_timer.stop()
+
+        pretty = "RTC" if "rtc" in script_name.lower() else "Image Scan"
+        self.btn_rtc.setEnabled(False)
+        self.btn_image.setEnabled(False)
+        self.temp_label.setText(f"In use by {pretty}")
+        self.temp_label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #d97706;"  # amber
+        )
 
         async def run_tool_sequence():
             if self.controller.is_connected:
@@ -803,16 +744,27 @@ class MainWindow(ManagedWindow):
                 QTimer.singleShot(0, self.on_tool_sequence_finished)
             except Exception as e:
                 logger.error(f"Failed to reconnect hardware: {e}")
+                QTimer.singleShot(0, self._on_tool_reconnect_failed)
 
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(run_tool_sequence(), self.loop)
 
     def on_tool_sequence_finished(self):
         self.angle_updated_signal.emit(self.controller.last_angle)
-        if hasattr(self, 'timer') and not self.timer.isActive():
-            self.timer.start()
+        self.btn_rtc.setEnabled(True)
+        self.btn_image.setEnabled(True)
+        # Restore temp label styling — content will be replaced on next poll.
+        self.temp_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        self.temp_label.setText("CCD Temp: -- °C")
+        if hasattr(self, 'temp_timer') and not self.temp_timer.isActive():
+            self.temp_timer.start()
 
-    # ── Event loop helpers ────────────────────────────────────────────
+    def _on_tool_reconnect_failed(self):
+        self.btn_rtc.setEnabled(True)
+        self.btn_image.setEnabled(True)
+        self.temp_label.setStyleSheet("font-weight: bold; font-size: 13px; color: red;")
+        self.temp_label.setText("CCD Temp: reconnect failed — retry tool or restart")
+
 
     def _start_event_loop(self):
         def run_loop(loop):
@@ -833,12 +785,10 @@ class MainWindow(ManagedWindow):
             logger.error(f"Error running async task: {e}")
             raise
 
-    # ── Grating ───────────────────────────────────────────────────────
 
     def update_grating(self, text):
         logger.info(f"Grating changed to {text}")
 
-    # ── Procedure factory ─────────────────────────────────────────────
 
     def make_procedure(self, rotation_angle=None, thorlabs_angle=None):
         procedure = self.procedure_class()
@@ -861,7 +811,6 @@ class MainWindow(ManagedWindow):
 
         procedure.grating = self.grating_combo.currentText()
 
-        # thorlabs_angle: explicit override → widget value → current cached value
         if thorlabs_angle is not None:
             procedure.thorlabs_angle = thorlabs_angle
         else:
@@ -869,7 +818,6 @@ class MainWindow(ManagedWindow):
 
         return procedure
 
-    # ── Queue ─────────────────────────────────────────────────────────
 
     def queue(self, procedure=None, rotation_angle=None, thorlabs_angle=None):
         if procedure is None:
@@ -905,11 +853,7 @@ class MainWindow(ManagedWindow):
         sleep(0.5)
 
     def _on_dual_sequence_run(self, steps: list):
-        """
-        Queue one batch of scans for every (opto_angle, tl_angle) step pair.
-        The DualStageSequencer's own scans_per_step overrides the single-scan
-        widget for this batch.
-        """
+
         scans_per_step = self._dual_seq.scans_per_step()
 
         for opto_angle, tl_angle in steps:
