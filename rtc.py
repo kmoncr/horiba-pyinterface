@@ -29,6 +29,9 @@ except ImportError:
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
     scan_error = QtCore.pyqtSignal(str)
+    # Emits True when a live scan starts, False when it stops. The main
+    # window listens to this to disable its queue while RTC is busy.
+    scanning_changed = QtCore.pyqtSignal(bool)
 
     def __init__(self, controller: 'HoribaController | None' = None,
                  loop: 'asyncio.AbstractEventLoop | None' = None,
@@ -306,13 +309,14 @@ class LiveViewWindow(QWidget):
             return
             
         self.stop_event.clear()
-        self.is_scanning = True 
+        self.is_scanning = True
+        self.scanning_changed.emit(True)
         self.worker_thread = threading.Thread(
-            target=self._scan_loop, 
-            args=(params,), 
+            target=self._scan_loop,
+            args=(params,),
             daemon=True
         )
-        
+
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.worker_thread.start()
@@ -323,10 +327,13 @@ class LiveViewWindow(QWidget):
         self.stop_event.set()
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5.0)
-        
-        self.is_scanning = False  
+
+        was_scanning = self.is_scanning
+        self.is_scanning = False
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        if was_scanning:
+            self.scanning_changed.emit(False)
         logger.info("Live scan stopped.")
 
     def _scan_loop(self, params):

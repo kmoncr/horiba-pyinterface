@@ -613,13 +613,17 @@ class MainWindow(ManagedWindow):
         tools_layout.addWidget(self.temp_label, stretch=1)
 
         self.btn_rtc   = QPushButton("RTC")
-        self.btn_rtc.clicked.connect(lambda: self.launch_external_tool("rtc.py"))
+        self.btn_rtc.clicked.connect(self._open_rtc_window)
         self.btn_image = QPushButton("Image Scan")
-        self.btn_image.clicked.connect(lambda: self.launch_external_tool("image.py"))
+        self.btn_image.clicked.connect(self._open_image_window)
         tools_layout.addWidget(self.btn_rtc)
         tools_layout.addWidget(self.btn_image)
 
         self.tools_group.setLayout(tools_layout)
+
+        # Lazy handles to in-process child windows.
+        self._rtc_win = None
+        self._image_win = None
 
     def _insert_sequencer_at_bottom(self):
         """Append the dual-stage sequencer below the Queue/Abort buttons."""
@@ -781,42 +785,53 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_thorlabs_angle_result)
 
-    # ── External tool launcher ────────────────────────────────────────
+    # ── In-process child windows ──────────────────────────────────────
 
-    def launch_external_tool(self, script_name):
-        if hasattr(self, 'timer') and self.timer.isActive():
-            self.timer.stop()
+    def _open_rtc_window(self):
+        """Open the live-view (RTC) window in-process, sharing the
+        controller and event loop. No subprocess, no ICL teardown."""
+        from rtc import LiveViewWindow
 
-        async def run_tool_sequence():
-            if self.controller.is_connected:
-                await self.controller.shutdown()
-                self.controller.is_connected = False
-                await asyncio.sleep(2.0)
+        if self._rtc_win is None:
+            self._rtc_win = LiveViewWindow(
+                controller=self.controller, loop=self.loop, parent=self,
+            )
+            self._rtc_win.scanning_changed.connect(self._on_child_scanning_changed)
+            # Forget the handle once the user actually closes it so a
+            # later click rebuilds with fresh state.
+            self._rtc_win.destroyed.connect(lambda *_: self._on_child_destroyed("rtc"))
+        self._rtc_win.show()
+        self._rtc_win.raise_()
+        self._rtc_win.activateWindow()
 
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    sys.executable, script_name
-                )
-                await process.wait()
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                logger.error(f"failed to run tool: {e}")
+    def _open_image_window(self):
+        """Open the image-mode window in-process, sharing the controller
+        and event loop."""
+        from image import ImageWindow
 
-            try:
-                await self.controller.connect_hardware()
-                if self.controller.rotation_stage:
-                    self.controller.last_angle = self.controller.rotation_stage.degree
-                QTimer.singleShot(0, self.on_tool_sequence_finished)
-            except Exception as e:
-                logger.error(f"Failed to reconnect hardware: {e}")
+        if self._image_win is None:
+            self._image_win = ImageWindow(
+                controller=self.controller, loop=self.loop, parent=self,
+            )
+            self._image_win.destroyed.connect(lambda *_: self._on_child_destroyed("image"))
+        self._image_win.show()
+        self._image_win.raise_()
+        self._image_win.activateWindow()
 
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(run_tool_sequence(), self.loop)
+    def _on_child_destroyed(self, which: str) -> None:
+        if which == "rtc":
+            self._rtc_win = None
+        elif which == "image":
+            self._image_win = None
 
-    def on_tool_sequence_finished(self):
-        self.angle_updated_signal.emit(self.controller.last_angle)
-        if hasattr(self, 'timer') and not self.timer.isActive():
-            self.timer.start()
+    def _on_child_scanning_changed(self, busy: bool) -> None:
+        """Disable the Queue/inputs panel while a live RTC scan runs.
+
+        We block the inputs widget rather than poking pymeasure's
+        internal queue button so this works regardless of where
+        ManagedWindow placed the button.
+        """
+        self.inputs.setEnabled(not busy)
 
     # ── Event loop helpers ────────────────────────────────────────────
 
@@ -962,7 +977,25 @@ class MainWindow(ManagedWindow):
             return
         self._is_closing = True
 
-        logger.info("Closing application...")
+        # Close any open child windows first; they share our controller
+        # and loop and will skip their own shutdown because they don't
+        # own them.
+        for child in (self._rtc_win, self._image_win):
+            if child is not None:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+
+        # Make sure no acquisition is in flight before shutting down.
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.controller.acquisition_abort(), self.loop
+            )
+            future.result(timeout=5)
+        except Exception as e:
+            logger.warning(f"acquisition_abort during shutdown failed: {e}")
+
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self.controller.shutdown(), self.loop

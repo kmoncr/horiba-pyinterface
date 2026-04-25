@@ -79,3 +79,20 @@ def test_injected_rtc_does_not_call_connect_hardware(qtbot, background_loop, fak
     qtbot.addWidget(win)
 
     fake_controller.connect_hardware.assert_not_called()
+
+
+def test_rtc_emits_scanning_changed_on_start_and_stop(qtbot, background_loop, fake_controller):
+    """The main window relies on this signal to disable its queue
+    while a live scan is running."""
+    from rtc import LiveViewWindow
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+
+    with qtbot.waitSignal(win.scanning_changed, timeout=1000) as blocker:
+        win.start_scan()
+    assert blocker.args == [True]
+
+    with qtbot.waitSignal(win.scanning_changed, timeout=2000) as blocker:
+        win.stop_scan()
+    assert blocker.args == [False]
