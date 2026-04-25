@@ -653,12 +653,17 @@ class MainWindow(ManagedWindow):
         future.add_done_callback(self._handle_temp_result)
 
     def _handle_temp_result(self, fut):
-        self._temp_pending = False
         try:
-            temp = fut.result()
-            self.temp_updated_signal.emit(temp)
-        except Exception:
-            self.temp_updated_signal.emit(-999.0)
+            try:
+                temp = fut.result()
+                self.temp_updated_signal.emit(temp)
+            except Exception:
+                self.temp_updated_signal.emit(-999.0)
+        finally:
+            # finally: even if an unexpected error escapes the inner
+            # try, the pending flag must reset — otherwise temp polls
+            # silently stop forever after the first orphaned future.
+            self._temp_pending = False
 
     def on_temp_ui_update(self, temp):
         if temp == -999.0:

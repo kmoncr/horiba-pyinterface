@@ -84,3 +84,47 @@ def test_acquisition_abort_noop_when_disconnected(mock_horiba_sdk, controller):
     _run(main())
 
     mock_horiba_sdk.ccd.acquisition_abort.assert_not_awaited()
+
+
+# ── re-raise on acquire failure (commit 4) ────────────────────────────
+
+def test_acquire_spectrum_reraises_on_ccd_error(mock_horiba_sdk, controller):
+    """Errors inside acquire_spectrum must propagate — silently
+    returning None caused callers to crash with a confusing TypeError
+    in zip(x_data, y_data)."""
+
+    async def boom():
+        raise RuntimeError("ICL went away")
+
+    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = boom
+
+    async def main():
+        await controller.connect_hardware()
+        await controller.acquire_spectrum()
+
+    with pytest.raises(RuntimeError, match="ICL went away"):
+        _run(main())
+
+    # And the controller must mark itself disconnected so the next
+    # call triggers a fresh connect_hardware.
+    assert controller.is_connected is False
+
+
+def test_acquire_spectrum_clears_acquiring_flag_on_error(mock_horiba_sdk, controller):
+    """A failed acquisition must not leave _acquiring stuck True,
+    or temperature polls would silently return -999.0 forever."""
+
+    async def boom():
+        raise RuntimeError("nope")
+
+    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = boom
+
+    async def main():
+        await controller.connect_hardware()
+        try:
+            await controller.acquire_spectrum()
+        except RuntimeError:
+            pass
+
+    _run(main())
+    assert controller._acquiring is False

@@ -234,13 +234,13 @@ class HoribaController:
 
         except Exception:
             logger.exception("failed to acquire spectrum")
+            # Mark the controller stale so the next call triggers a
+            # fresh connect_hardware. Do NOT call dm.stop() here — that
+            # tears down icl.exe and forces a 10 s reboot every time
+            # there is a transient ICL hiccup. The reconnect path in
+            # connect_hardware handles a stale device manager safely.
             self.is_connected = False
-            try:
-                if self.dm:
-                    await self.dm.stop()
-            except Exception:
-                pass
-            self.dm = None
+            raise
         finally:
             self._acquiring = False
 
