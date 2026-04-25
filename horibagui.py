@@ -834,27 +834,6 @@ class MainWindow(ManagedWindow):
             logger.error(f"Error running async task: {e}")
             raise
 
-    def do_go_to_angle(self):
-        target_angle = self.set_angle_input.value()
-        logger.info(f"GUI: Setting angle to {target_angle}°")
-        
-        async def _set_and_update():
-            await self.controller.set_rotation_angle(target_angle)
-            return await self.controller.get_rotation_angle()
-
-        future = asyncio.run_coroutine_threadsafe(_set_and_update(), self.loop)
-        future.add_done_callback(self._handle_angle_result)
-
-    def do_return_to_origin(self):
-        logger.info("GUI: Returning to origin")
-        
-        async def _home_and_update():
-            await self.controller.return_rotation_to_origin()
-            return await self.controller.get_rotation_angle()
-
-        future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
-        future.add_done_callback(self._handle_angle_result)
-
     def update_grating(self, text):
         logger.info(f"Grating changed to {text}")
 
