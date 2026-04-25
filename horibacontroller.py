@@ -1,5 +1,6 @@
 import asyncio
 from typing import Any
+import numpy as np
 from loguru import logger
 from horiba_sdk.devices.device_manager import DeviceManager
 from horiba_sdk.devices.single_devices import ChargeCoupledDevice, Monochromator
@@ -239,6 +240,101 @@ class HoribaController:
             # tears down icl.exe and forces a 10 s reboot every time
             # there is a transient ICL hiccup. The reconnect path in
             # connect_hardware handles a stale device manager safely.
+            self.is_connected = False
+            raise
+        finally:
+            self._acquiring = False
+
+    async def acquire_image(self, **kwargs) -> np.ndarray:
+        """Acquire a single 2D image frame from the CCD.
+
+        Mirrors acquire_spectrum's setup but uses
+        AcquisitionFormat.IMAGE and XAxisConversionType.NONE. The
+        returned array is a fresh copy of the SDK payload, shape
+        (y_size, x_size).
+
+        Optional kwargs for ROI override: x_origin, y_origin, x_size,
+        y_size, x_bin, y_bin. Defaults: full chip from get_configuration,
+        x_bin=y_bin=1.
+
+        Other kwargs honoured: exposure (s), gain, speed,
+        center_wavelength, rotation_angle, thorlabs_angle.
+        """
+        if not self.is_connected:
+            await self.connect_hardware()
+
+        exposure       = kwargs.get("exposure", 1.0)
+        gain           = kwargs.get("gain", 0)
+        speed          = kwargs.get("speed", 2)
+        center_wl      = kwargs.get("center_wavelength", None)
+        rotation_angle = kwargs.get("rotation_angle", None)
+        thorlabs_angle = kwargs.get("thorlabs_angle", None)
+
+        # ── Move stages (outside the SDK lock) ──────────────────────
+        if rotation_angle is not None and self.enable_rotation_stage and self.rotation_stage:
+            if abs(self.last_angle - rotation_angle) > 0.01:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: setattr(self.rotation_stage, 'degree', rotation_angle)
+                )
+                self.last_angle = rotation_angle
+
+        if thorlabs_angle is not None and self.enable_thorlabs_stage and self.thorlabs_stage:
+            if abs(self.last_thorlabs_angle - thorlabs_angle) > 0.001:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: setattr(self.thorlabs_stage, 'degree', thorlabs_angle)
+                )
+                self.last_thorlabs_angle = thorlabs_angle
+
+        self._acquiring = True
+        try:
+            async with self._lock():
+                cfg = await self.ccd.get_configuration()
+                chip_w = int(cfg["chipWidth"])
+                chip_h = int(cfg["chipHeight"])
+
+                x_origin = int(kwargs.get("x_origin", 0))
+                y_origin = int(kwargs.get("y_origin", 0))
+                x_size   = int(kwargs.get("x_size", chip_w))
+                y_size   = int(kwargs.get("y_size", chip_h))
+                x_bin    = int(kwargs.get("x_bin", 1))
+                y_bin    = int(kwargs.get("y_bin", 1))
+
+                await self.ccd.set_acquisition_count(1)
+                if center_wl is not None:
+                    await self.ccd.set_center_wavelength(self.mono.id(), center_wl)
+                await self.ccd.set_exposure_time(int(exposure * 1000))
+                await self.ccd.set_gain(gain)
+                await self.ccd.set_speed(speed)
+                await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
+                await self.ccd.set_acquisition_format(1, AcquisitionFormat.IMAGE)
+                await self.ccd.set_region_of_interest(
+                    1, x_origin, y_origin, x_size, y_size, x_bin, y_bin
+                )
+                await self.ccd.set_x_axis_conversion_type(XAxisConversionType.NONE)
+
+                if not await self.ccd.get_acquisition_ready():
+                    raise RuntimeError("CCD not ready for image acquisition")
+
+                await self.ccd.acquisition_start(open_shutter=True)
+                if exposure > 0.1:
+                    await asyncio.sleep(exposure * 0.9)
+                await self._wait_for_ccd(self.ccd)
+
+                raw = await self.ccd.get_acquisition_data()
+                y_data = raw[0]["roi"][0]["yData"]
+
+                # np.array(...) always copies — never share memory with
+                # the SDK's payload list.
+                arr = np.array(y_data, dtype=float)
+                # Some SDK payloads come pre-shaped, others come flat.
+                effective_y = max(1, y_size // max(1, y_bin))
+                effective_x = max(1, x_size // max(1, x_bin))
+                if arr.ndim == 1:
+                    arr = arr.reshape(effective_y, effective_x)
+                return arr
+
+        except Exception:
+            logger.exception("failed to acquire image")
             self.is_connected = False
             raise
         finally:
