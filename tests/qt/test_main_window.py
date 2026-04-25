@@ -157,6 +157,36 @@ def test_save_dir_default_from_qsettings(tmp_path, qtbot, mock_horiba_sdk, monke
     assert win.file_input.directory == target
 
 
+# ── Plot x-axis combo mirroring RTC (commit 14) ───────────────────────
+
+def test_plot_widget_offers_all_four_x_axes(main_window):
+    """MainWindow's plot_widget x-axis combo (built by pymeasure from
+    DATA_COLUMNS) must offer Wavelength, Wavenumber, Energy, and
+    Raman Energy as selectable x-axes."""
+    pw = getattr(main_window, "plot_widget", None) or main_window.widget_list[0]
+    items = [pw.columns_x.itemText(i) for i in range(pw.columns_x.count())]
+    for col in ("Wavelength", "Wavenumber", "Energy", "Raman Energy"):
+        assert col in items, f"plot_widget missing x-axis option {col!r}"
+
+
+def test_set_plot_x_axis_changes_columns_x(main_window):
+    """The convenience set_plot_x_axis(label) helper must drive the
+    pymeasure plot_widget's columns_x to the matching DATA_COLUMNS
+    column name."""
+    main_window.set_plot_x_axis("Energy (eV)")
+    pw = getattr(main_window, "plot_widget", None) or main_window.widget_list[0]
+    assert pw.columns_x.currentText() == "Energy"
+
+    main_window.set_plot_x_axis("Raman shift (eV)")
+    assert pw.columns_x.currentText() == "Raman Energy"
+
+    main_window.set_plot_x_axis("Raman shift (cm⁻¹)")
+    assert pw.columns_x.currentText() == "Wavenumber"
+
+    main_window.set_plot_x_axis("Wavelength (nm)")
+    assert pw.columns_x.currentText() == "Wavelength"
+
+
 def test_save_dir_written_after_queue(tmp_path, qtbot, mock_horiba_sdk, monkeypatch):
     """Calling MainWindow.queue() with a non-default directory must
     update QSettings("HoribaIHR550","Paths").last_save_dir."""

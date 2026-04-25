@@ -917,6 +917,39 @@ class MainWindow(ManagedWindow):
     def update_grating(self, text):
         logger.info(f"Grating changed to {text}")
 
+    # ── Plot axis ergonomics (commit 14) ──────────────────────────────
+
+    # Friendly RTC-style label → underlying DATA_COLUMNS column.
+    _PLOT_AXIS_LABEL_TO_COLUMN = {
+        "Wavelength (nm)":      "Wavelength",
+        "Raman shift (cm⁻¹)": "Wavenumber",
+        "Energy (eV)":          "Energy",
+        "Raman shift (eV)":     "Raman Energy",
+    }
+
+    def set_plot_x_axis(self, label: str) -> None:
+        """Drive pymeasure's plot_widget.columns_x by friendly label.
+
+        Mirrors rtc.LiveViewWindow's x-axis combo so the same
+        terminology works in both windows.
+        """
+        column = self._PLOT_AXIS_LABEL_TO_COLUMN.get(label)
+        if column is None:
+            logger.warning(f"unknown plot axis label: {label!r}")
+            return
+        pw = getattr(self, "plot_widget", None)
+        if pw is None and getattr(self, "widget_list", None):
+            pw = self.widget_list[0]
+        if pw is None:
+            return
+        idx = pw.columns_x.findText(column)
+        if idx >= 0:
+            pw.columns_x.setCurrentIndex(idx)
+            try:
+                pw.update_x_column(idx)
+            except AttributeError:
+                pass
+
     # ── Procedure factory ─────────────────────────────────────────────
 
     def make_procedure(self, rotation_angle=None, thorlabs_angle=None):
