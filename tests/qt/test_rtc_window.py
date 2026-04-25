@@ -160,6 +160,59 @@ def test_x_axis_combo_persists_across_restart(qtbot, mock_horiba_sdk, monkeypatc
         t.join(timeout=2)
 
 
+# ── Mode combo + QStackedWidget (commit 15) ───────────────────────────
+
+def test_rtc_has_mode_combo_with_spectrum_and_image(qtbot, background_loop, fake_controller):
+    from rtc import LiveViewWindow
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+
+    items = [win.mode_combo.itemText(i) for i in range(win.mode_combo.count())]
+    assert "Spectrum" in items
+    assert "Image" in items
+
+
+def test_rtc_mode_combo_swaps_stacked_widget(qtbot, background_loop, fake_controller):
+    """Switching the mode combo to Image must show the pg.ImageView;
+    Spectrum must show the pg.PlotWidget."""
+    import pyqtgraph as pg
+    from rtc import LiveViewWindow
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+
+    win.mode_combo.setCurrentText("Spectrum")
+    current_spec = win.plot_stack.currentWidget()
+    assert isinstance(current_spec, pg.PlotWidget)
+
+    win.mode_combo.setCurrentText("Image")
+    current_img = win.plot_stack.currentWidget()
+    assert isinstance(current_img, pg.ImageView)
+
+
+def test_rtc_image_mode_uses_acquire_image(qtbot, background_loop, fake_controller):
+    """In Image mode, the scan loop must call controller.acquire_image,
+    not acquire_spectrum, and the result must arrive on image_ready."""
+    import numpy as np
+    from rtc import LiveViewWindow
+
+    expected = np.arange(20, dtype=float).reshape(4, 5)
+    fake_controller.acquire_image.return_value = expected
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+    win.mode_combo.setCurrentText("Image")
+
+    # Wait for one image to come back.
+    with qtbot.waitSignal(win.image_ready, timeout=3000):
+        win.start_scan()
+    win.stop_scan()
+
+    fake_controller.acquire_image.assert_awaited()
+    fake_controller.acquire_spectrum.assert_not_awaited()
+
+
 def test_autoscale_toggle_freezes_view(qtbot, background_loop, fake_controller):
     """When unchecked, pushing data outside the current view range
     must NOT change the visible range. When re-checked, the next data

@@ -9,7 +9,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
-    QCheckBox
+    QCheckBox, QStackedWidget,
 )
 import pyqtgraph as pg
 import numpy as np
@@ -28,6 +28,7 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
+    image_ready = QtCore.pyqtSignal(object)         # 2-D ndarray
     scan_error = QtCore.pyqtSignal(str)
     # Emits True when a live scan starts, False when it stops. The main
     # window listens to this to disable its queue while RTC is busy.
@@ -75,13 +76,26 @@ class LiveViewWindow(QWidget):
         controls_layout = QVBoxLayout()
         controls_layout.setSpacing(15)
         
+        # The display swaps between a 1-D spectrum plot and a 2-D
+        # image view depending on the mode combo (Spectrum / Image).
         plot_widget = QWidget()
         plot_layout = QVBoxLayout()
+        self.plot_stack = QStackedWidget()
+
         self.plot_widget = pg.PlotWidget()
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setLabels(left='Intensity (counts)', bottom='Wavelength (nm)')
-        self.plot_data_item = self.plot_item.plot(pen='y') 
-        plot_layout.addWidget(self.plot_widget)
+        self.plot_data_item = self.plot_item.plot(pen='y')
+        self.plot_stack.addWidget(self.plot_widget)   # index 0 = Spectrum
+
+        self.image_view = pg.ImageView()
+        try:
+            self.image_view.setColorMap(pg.colormap.get('viridis'))
+        except Exception:
+            pass
+        self.plot_stack.addWidget(self.image_view)    # index 1 = Image
+
+        plot_layout.addWidget(self.plot_stack)
         plot_widget.setLayout(plot_layout)
     
         scan_box = QGroupBox("Scan Control")
@@ -99,6 +113,16 @@ class LiveViewWindow(QWidget):
         scan_layout.addWidget(self.stop_button)
         scan_box.setLayout(scan_layout)
         controls_layout.addWidget(scan_box)
+
+        # Acquisition-mode toggle (1-D spectrum vs 2-D image preview).
+        mode_box = QGroupBox("Acquisition Mode")
+        mode_form = QFormLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Spectrum", "Image"])
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        mode_form.addRow("Mode:", self.mode_combo)
+        mode_box.setLayout(mode_form)
+        controls_layout.addWidget(mode_box)
 
         plot_options_box = QGroupBox("Plot Options")
         plot_options_layout = QFormLayout()
@@ -232,6 +256,7 @@ class LiveViewWindow(QWidget):
         self.setLayout(main_layout)
         
         self.data_ready.connect(self.update_plot)
+        self.image_ready.connect(self.update_image)
         self.scan_error.connect(self.handle_scan_error)
 
         # Restore persisted axis choice + autoscale state, then wire
@@ -239,6 +264,19 @@ class LiveViewWindow(QWidget):
         # widgets exist.
         self._restore_axis_settings()
         logger.info("RTC GUI initialized.")
+
+    # ── Mode handling ─────────────────────────────────────────────────
+
+    def _on_mode_changed(self, text: str) -> None:
+        idx = 1 if text == "Image" else 0
+        self.plot_stack.setCurrentIndex(idx)
+
+    @QtCore.pyqtSlot(object)
+    def update_image(self, arr) -> None:
+        try:
+            self.image_view.setImage(arr, autoLevels=True)
+        except Exception as e:
+            logger.warning(f"Failed to update image: {e}")
 
     # ── X-axis conversion ─────────────────────────────────────────────
 
@@ -431,33 +469,44 @@ class LiveViewWindow(QWidget):
             self.scan_error.emit(f"Failed to set rotation angle: {e}")
             return
 
+        # The mode combo lives on the GUI thread; capturing its value
+        # once per acquisition lets the user flip mode mid-scan and the
+        # next iteration picks it up.
         acquisition_count = 0
         while not self.stop_event.is_set():
             try:
                 acquisition_count += 1
-                logger.info(f"Starting acquisition #{acquisition_count}")
+                mode = self.mode_combo.currentText()
+                logger.info(f"Starting acquisition #{acquisition_count} ({mode})")
                 start_time = time.time()
-                
-                x, y = self.run_async_task(
-                    self.controller.acquire_spectrum(**params),
-                    timeout=60 
-                )
-                
-                if isinstance(x, list) and len(x) == 1:
-                    x = x[0]
-                if isinstance(y, list) and len(y) == 1:
-                    y = y[0]
 
-                if not self.stop_event.is_set():
-                    self.data_ready.emit(x, y)
-                    logger.success(f"Acquisition #{acquisition_count} completed successfully")
-                
+                if mode == "Image":
+                    arr = self.run_async_task(
+                        self.controller.acquire_image(**params),
+                        timeout=120,
+                    )
+                    if not self.stop_event.is_set():
+                        self.image_ready.emit(arr)
+                else:
+                    x, y = self.run_async_task(
+                        self.controller.acquire_spectrum(**params),
+                        timeout=60,
+                    )
+                    if isinstance(x, list) and len(x) == 1:
+                        x = x[0]
+                    if isinstance(y, list) and len(y) == 1:
+                        y = y[0]
+                    if not self.stop_event.is_set():
+                        self.data_ready.emit(x, y)
+
+                logger.success(f"Acquisition #{acquisition_count} completed successfully")
+
                 elapsed = time.time() - start_time
                 logger.debug(f"Acquisition took {elapsed:.2f}s")
-                
+
                 if elapsed < 0.1:
                     time.sleep(0.1)
-                        
+
             except Exception as e:
                 logger.error(f"Error in acquisition loop: {e}")
                 self.scan_error.emit(f"Acquisition error: {e}")
