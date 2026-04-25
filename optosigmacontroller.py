@@ -37,6 +37,16 @@ class OptoSigmaController:
                 logger.error(f"error disconnecting: {str(e)}")
         self._is_connected = False
         self.controller = None
+
+    def reconnect(self) -> bool:
+        """Bring the stage back up if it was disconnected.
+
+        Returns True when the stage is connected (already-was or
+        successfully reconnected), False on failure.
+        """
+        if self._is_connected and self.controller is not None:
+            return True
+        return self.connect()
     
     def _update_current_position(self):
         if self._is_connected and self.controller:

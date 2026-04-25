@@ -203,6 +203,113 @@ def test_acquire_image_uses_image_format(mock_horiba_sdk, controller):
     assert AcquisitionFormat.IMAGE in formats
 
 
+# ── Stage handling across the spectrometer-only shutdown (commit 8b) ──
+
+def test_shutdown_spectrometer_does_not_disconnect_stages(mock_horiba_sdk, monkeypatch):
+    """A spectrometer-only shutdown must leave the rotation stages
+    connected. The full shutdown() (called only on app close) is what
+    tears them down."""
+    from unittest.mock import MagicMock
+    import horibacontroller
+
+    fake_stage_cls = MagicMock(name="OptoSigmaCls")
+    fake_stage_instance = MagicMock(name="OptoSigmaInst")
+    fake_stage_instance.connect.return_value = True
+    fake_stage_instance.is_connected = True
+    fake_stage_instance.degree = 47.5
+    fake_stage_cls.return_value = fake_stage_instance
+
+    monkeypatch.setattr(horibacontroller, "OptoSigmaController", fake_stage_cls)
+
+    c = horibacontroller.HoribaController(
+        enable_logging=False,
+        enable_rotation_stage=True,
+        enable_thorlabs_stage=False,
+    )
+
+    async def main():
+        await c.connect_hardware()
+        await c.shutdown_spectrometer()
+
+    _run(main())
+
+    fake_stage_instance.disconnect.assert_not_called()
+    assert c.rotation_stage is fake_stage_instance
+
+
+def test_full_shutdown_does_disconnect_stages(mock_horiba_sdk, monkeypatch):
+    """The all-up shutdown() (closeEvent path) does tear down the
+    rotation stage by design."""
+    from unittest.mock import MagicMock
+    import horibacontroller
+
+    fake_stage_cls = MagicMock(name="OptoSigmaCls")
+    fake_stage_instance = MagicMock(name="OptoSigmaInst")
+    fake_stage_instance.connect.return_value = True
+    fake_stage_instance.is_connected = True
+    fake_stage_instance.degree = 0.0
+    fake_stage_cls.return_value = fake_stage_instance
+
+    monkeypatch.setattr(horibacontroller, "OptoSigmaController", fake_stage_cls)
+
+    c = horibacontroller.HoribaController(
+        enable_logging=False,
+        enable_rotation_stage=True,
+        enable_thorlabs_stage=False,
+    )
+
+    async def main():
+        await c.connect_hardware()
+        await c.shutdown()
+
+    _run(main())
+
+    fake_stage_instance.disconnect.assert_called_once()
+
+
+def test_connect_hardware_reconnects_disconnected_stage(mock_horiba_sdk, monkeypatch):
+    """If the rotation stage went disconnected for any reason,
+    connect_hardware must bring it back and refresh last_angle."""
+    from unittest.mock import MagicMock
+    import horibacontroller
+
+    fake_stage_cls = MagicMock(name="OptoSigmaCls")
+    fake_stage_instance = MagicMock(name="OptoSigmaInst")
+    fake_stage_instance.connect.return_value = True
+    fake_stage_instance.is_connected = True
+    fake_stage_instance.degree = 12.5
+    fake_stage_cls.return_value = fake_stage_instance
+
+    monkeypatch.setattr(horibacontroller, "OptoSigmaController", fake_stage_cls)
+
+    c = horibacontroller.HoribaController(
+        enable_logging=False,
+        enable_rotation_stage=True,
+        enable_thorlabs_stage=False,
+    )
+
+    # Simulate the stage having been disconnected mid-session.
+    fake_stage_instance.is_connected = False
+    fake_stage_instance.degree = 99.0  # the new physical position
+
+    # Bring spectrometer up. connect_hardware must drive the stage
+    # back up and refresh last_angle.
+    fake_stage_instance.reconnect = MagicMock(return_value=True)
+    # When reconnect succeeds, the stage reports its current angle.
+    def reconnect_side():
+        fake_stage_instance.is_connected = True
+        return True
+    fake_stage_instance.reconnect.side_effect = reconnect_side
+
+    async def main():
+        await c.connect_hardware()
+
+    _run(main())
+
+    fake_stage_instance.reconnect.assert_called_once()
+    assert c.last_angle == 99.0
+
+
 def test_acquire_image_does_not_mutate_payload(mock_horiba_sdk, controller):
     """The returned ndarray must be a copy, not a view into the
     list payload returned by the SDK."""

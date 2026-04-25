@@ -92,7 +92,37 @@ class HoribaController:
         return self._sdk_lock
 
     async def connect_hardware(self):
-        """Connect to spectrometer."""
+        """Connect to spectrometer (and any auxiliary stage that came
+        loose since the last call)."""
+        # Defensive stage reconnect happens regardless of whether the
+        # spectrometer is already connected — a child window might have
+        # left a stage in a half-state without touching is_connected on
+        # the controller.
+        if self.enable_rotation_stage and self.rotation_stage is not None:
+            if not self.rotation_stage.is_connected:
+                try:
+                    if self.rotation_stage.reconnect():
+                        # Refresh last_angle from the live stage, not
+                        # the cached value which may be stale.
+                        try:
+                            self.last_angle = self.rotation_stage.degree
+                        except Exception as e:
+                            logger.warning(f"could not read OptoSigma angle after reconnect: {e}")
+                except AttributeError:
+                    # Older OptoSigmaController without reconnect().
+                    pass
+
+        if self.enable_thorlabs_stage and self.thorlabs_stage is not None:
+            if not self.thorlabs_stage.is_connected:
+                try:
+                    self.thorlabs_stage.connect()
+                    try:
+                        self.last_thorlabs_angle = self.thorlabs_stage.degree
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"could not reconnect Thorlabs stage: {e}")
+
         if self.is_connected:
             return
 
@@ -432,8 +462,35 @@ class HoribaController:
         while await ccd.get_acquisition_busy():
             await asyncio.sleep(0.05)
 
+    async def shutdown_spectrometer(self) -> None:
+        """Close the spectrometer (mono, CCD, DeviceManager) only.
+
+        Leaves the rotation stages connected so the GUI keeps reading
+        their live position. Used by tests of the spectrometer-only
+        teardown path.
+        """
+        if self.is_connected:
+            try:
+                async with self._lock():
+                    if self.ccd:
+                        await self.ccd.close()
+                    if self.mono:
+                        await self.mono.close()
+                    if self.dm:
+                        await self.dm.stop()
+            except Exception as e:
+                logger.error(f"error closing devices: {e}")
+            self.is_connected = False
+
     async def shutdown(self) -> None:
+        """Full teardown — spectrometer and all auxiliary stages.
+
+        Called from the main window's closeEvent only. Child windows
+        share the controller and therefore must NOT call this on close.
+        """
         logger.info("Shutting down hardware...")
+
+        await self.shutdown_spectrometer()
 
         if self.enable_rotation_stage and self.rotation_stage:
             try:
@@ -448,19 +505,5 @@ class HoribaController:
                 )
             except Exception:
                 pass
-
-        # Spectrometer
-        if self.is_connected:
-            try:
-                async with self._lock():
-                    if self.ccd:
-                        await self.ccd.close()
-                    if self.mono:
-                        await self.mono.close()
-                    if self.dm:
-                        await self.dm.stop()
-            except Exception as e:
-                logger.error(f"error closing devices: {e}")
-            self.is_connected = False
 
         logger.success("shutdown complete")
