@@ -28,25 +28,38 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
-    scan_error = QtCore.pyqtSignal(str)  
+    scan_error = QtCore.pyqtSignal(str)
 
-    def __init__(self):
-        super().__init__()
-        
-        self.controller = HoribaController(enable_logging=True)
-        self.loop = None
-        self.loop_thread = None
-        self._start_event_loop()
+    def __init__(self, controller: 'HoribaController | None' = None,
+                 loop: 'asyncio.AbstractEventLoop | None' = None,
+                 parent=None):
+        super().__init__(parent)
 
-        logger.info("starting hardware connection...")
-        try:
-            self.run_async_task(self.controller.connect_hardware(), timeout=60)
-        except Exception as e:
-            logger.error(f"Failed to initialize hardware on startup: {e}")
-        
+        # Constructor injection lets the main GUI share its controller
+        # and event loop, eliminating the slow ICL teardown/restart
+        # that was happening when RTC ran as a separate subprocess.
+        # When invoked standalone (python rtc.py), build our own.
+        if controller is not None and loop is not None:
+            self.controller = controller
+            self.loop = loop
+            self.loop_thread = None
+            self._owns_controller = False
+        else:
+            self.controller = HoribaController(enable_logging=True)
+            self.loop = None
+            self.loop_thread = None
+            self._start_event_loop()
+            self._owns_controller = True
+
+            logger.info("starting hardware connection...")
+            try:
+                self.run_async_task(self.controller.connect_hardware(), timeout=60)
+            except Exception as e:
+                logger.error(f"Failed to initialize hardware on startup: {e}")
+
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.is_scanning = False  
+        self.is_scanning = False
         
         self.latest_wavelength = None
         self.latest_intensity = None
@@ -386,26 +399,39 @@ class LiveViewWindow(QWidget):
             logger.warning(f"Failed to update plot: {e}")
 
     def closeEvent(self, event):
-        logger.info("Closing application...")
+        logger.info("Closing RTC window...")
         self.stop_scan()
-        
+
+        # Always abort any in-flight CCD acquisition so we never leave
+        # the device busy when control returns to the parent window.
         try:
-            logger.info("Shutting down Horiba controller...")
             future = asyncio.run_coroutine_threadsafe(
-                self.controller.shutdown(), 
-                self.loop
+                self.controller.acquisition_abort(), self.loop
             )
             future.result(timeout=5)
-            logger.info("Controller shutdown complete.")
         except Exception as e:
-            logger.error(f"Error during controller shutdown: {e}")
-        
-        finally:
-            if self.loop and not self.loop.is_closed():
-                self.loop.call_soon_threadsafe(self.loop.stop)
-                if self.loop_thread:
-                    self.loop_thread.join(timeout=2)
-            
+            logger.warning(f"acquisition_abort during close failed: {e}")
+
+        # Only tear down the controller and the event loop when this
+        # window owns them. When the main GUI injected its own
+        # controller, the controller MUST keep running so the next
+        # scan can fire without a 10 s ICL reboot.
+        if self._owns_controller:
+            try:
+                logger.info("Shutting down Horiba controller...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self.controller.shutdown(), self.loop
+                )
+                future.result(timeout=5)
+                logger.info("Controller shutdown complete.")
+            except Exception as e:
+                logger.error(f"Error during controller shutdown: {e}")
+            finally:
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(self.loop.stop)
+                    if self.loop_thread:
+                        self.loop_thread.join(timeout=2)
+
         event.accept()
 
 if __name__ == "__main__":
