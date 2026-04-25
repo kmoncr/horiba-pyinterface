@@ -96,3 +96,102 @@ def test_rtc_emits_scanning_changed_on_start_and_stop(qtbot, background_loop, fa
     with qtbot.waitSignal(win.scanning_changed, timeout=2000) as blocker:
         win.stop_scan()
     assert blocker.args == [False]
+
+
+# ── x-axis combo + conversions (commit 13) ────────────────────────────
+
+import numpy as np
+import pytest
+
+
+@pytest.mark.parametrize("mode,exc_nm,wl_nm,expected", [
+    ("Wavelength (nm)",      532.0, 600.0, 600.0),
+    ("Energy (eV)",          532.0, 600.0, 1239.841984 / 600.0),
+    # Raman shift in cm⁻¹
+    ("Raman shift (cm⁻¹)", 532.0, 600.0,
+        (1.0/532.0 - 1.0/600.0) * 1e7),
+    # Raman shift in eV
+    ("Raman shift (eV)",     532.0, 600.0,
+        1239.841984/532.0 - 1239.841984/600.0),
+])
+def test_convert_x_units(qtbot, background_loop, fake_controller,
+                         mode, exc_nm, wl_nm, expected):
+    from rtc import LiveViewWindow
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+    win.excitation_wavelength.setValue(exc_nm)
+    win.x_axis_combo.setCurrentText(mode)
+
+    arr = np.array([wl_nm], dtype=float)
+    converted, label = win._convert_x(arr)
+    assert converted.shape == (1,)
+    assert converted[0] == pytest.approx(expected, rel=1e-9)
+    assert label == mode
+
+
+def test_x_axis_combo_persists_across_restart(qtbot, mock_horiba_sdk, monkeypatch):
+    """Changing the axis combo persists; a new RTC instance restores it."""
+    from rtc import LiveViewWindow
+    import asyncio, threading
+
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    try:
+        from horibacontroller import HoribaController
+        # Stages disabled via the mock_horiba_sdk fixture's monkeypatch.
+        ctrl = HoribaController(
+            enable_logging=False,
+            enable_rotation_stage=False,
+            enable_thorlabs_stage=False,
+        )
+
+        win1 = LiveViewWindow(controller=ctrl, loop=loop)
+        qtbot.addWidget(win1)
+        win1.x_axis_combo.setCurrentText("Energy (eV)")
+        # Persistence wired below should auto-save on this change.
+
+        win2 = LiveViewWindow(controller=ctrl, loop=loop)
+        qtbot.addWidget(win2)
+        assert win2.x_axis_combo.currentText() == "Energy (eV)"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=2)
+
+
+def test_autoscale_toggle_freezes_view(qtbot, background_loop, fake_controller):
+    """When unchecked, pushing data outside the current view range
+    must NOT change the visible range. When re-checked, the next data
+    push autoscales again."""
+    import pyqtgraph as pg
+    from rtc import LiveViewWindow
+
+    win = LiveViewWindow(controller=fake_controller, loop=background_loop)
+    qtbot.addWidget(win)
+
+    # Establish a known range with autoscale enabled.
+    win.autoscale_button.setChecked(True)
+    win.update_plot([0, 1, 2], [10, 20, 30])
+    QApplication = __import__("PyQt5.QtWidgets", fromlist=["QApplication"]).QApplication
+    QApplication.processEvents()
+    vb = win.plot_item.getViewBox()
+    initial_range = vb.viewRange()
+
+    # Disable autoscale and push data far outside the current view.
+    win.autoscale_button.setChecked(False)
+    QApplication.processEvents()
+    win.update_plot([0, 1, 2], [10000, 20000, 30000])
+    QApplication.processEvents()
+    frozen_range = vb.viewRange()
+    assert frozen_range == initial_range, (
+        f"autoscale OFF must not change view range: {initial_range} -> {frozen_range}"
+    )
+
+    # Re-enable; the range should now adapt.
+    win.autoscale_button.setChecked(True)
+    QApplication.processEvents()
+    win.update_plot([0, 1, 2], [10000, 20000, 30000])
+    QApplication.processEvents()
+    new_range = vb.viewRange()
+    assert new_range != frozen_range

@@ -102,12 +102,26 @@ class LiveViewWindow(QWidget):
 
         plot_options_box = QGroupBox("Plot Options")
         plot_options_layout = QFormLayout()
-        
-        self.wavenumber_checkbox = QCheckBox()
-        self.wavenumber_checkbox.setChecked(False)
-        self.wavenumber_checkbox.stateChanged.connect(self.toggle_x_axis)
-        plot_options_layout.addRow("Plot in Wavenumber (cm⁻¹):", self.wavenumber_checkbox)
-        
+
+        self.x_axis_combo = QComboBox()
+        self.x_axis_combo.addItems([
+            "Wavelength (nm)",
+            "Raman shift (cm⁻¹)",
+            "Energy (eV)",
+            "Raman shift (eV)",
+        ])
+        self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
+        plot_options_layout.addRow("X axis:", self.x_axis_combo)
+
+        # Auto-scale toggle. When unchecked, the user's pan/zoom is
+        # preserved across new frames; when re-checked, the next frame
+        # autoscales again.
+        self.autoscale_button = QPushButton("Auto Scale")
+        self.autoscale_button.setCheckable(True)
+        self.autoscale_button.setChecked(True)
+        self.autoscale_button.toggled.connect(self._on_autoscale_toggled)
+        plot_options_layout.addRow(self.autoscale_button)
+
         plot_options_box.setLayout(plot_options_layout)
         controls_layout.addWidget(plot_options_box)
 
@@ -219,27 +233,97 @@ class LiveViewWindow(QWidget):
         
         self.data_ready.connect(self.update_plot)
         self.scan_error.connect(self.handle_scan_error)
+
+        # Restore persisted axis choice + autoscale state, then wire
+        # change signals to save automatically. Done last so all
+        # widgets exist.
+        self._restore_axis_settings()
         logger.info("RTC GUI initialized.")
 
-    def wavelength_to_wavenumber(self, wavelength_nm):
-        """
-        wavenumber = (1/λ_excitation - 1/λ_scattered) * 10^7
-        """
-        excitation = self.excitation_wavelength.value()
-        try:
-            wavenumber = (1.0 / excitation - 1.0 / wavelength_nm) * 1e7
-            return wavenumber
-        except (ZeroDivisionError, TypeError):
-            return wavelength_nm 
+    # ── X-axis conversion ─────────────────────────────────────────────
 
-    def toggle_x_axis(self):
-        if self.wavenumber_checkbox.isChecked():
-            self.plot_item.setLabels(bottom='Raman Shift (cm⁻¹)')
-        else:
-            self.plot_item.setLabels(bottom='Wavelength (nm)')
-        
-        if self.latest_wavelength is not None and self.latest_intensity is not None:
+    HC_NM_EV = 1239.841984  # vacuum hc in nm·eV
+
+    def _convert_x(self, wl_nm):
+        """Map wavelength array (nm) → (x_array, axis_label) according
+        to the current x-axis combo selection.
+
+        np.array(...) always copies — we never mutate the caller's array.
+        """
+        arr = np.array(wl_nm, dtype=float)
+        mode = self.x_axis_combo.currentText()
+        exc = self.excitation_wavelength.value()
+        if mode == "Wavelength (nm)":
+            return arr, mode
+        if mode == "Raman shift (cm⁻¹)":
+            try:
+                return (1.0 / exc - 1.0 / arr) * 1e7, mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        if mode == "Energy (eV)":
+            try:
+                return self.HC_NM_EV / arr, mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        if mode == "Raman shift (eV)":
+            try:
+                return (self.HC_NM_EV / exc) - (self.HC_NM_EV / arr), mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        return arr, mode
+
+    def _on_x_axis_changed(self, _text: str) -> None:
+        # Update the axis label and re-render the latest data.
+        if self.latest_wavelength is not None:
             self.update_plot(self.latest_wavelength, self.latest_intensity)
+        self._save_axis_settings()
+
+    # ── Auto-scale toggle ─────────────────────────────────────────────
+
+    def _on_autoscale_toggled(self, checked: bool) -> None:
+        vb = self.plot_item.getViewBox()
+        if checked:
+            vb.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
+            # Force an immediate refit so the next pushed frame
+            # supersedes any stale view range from the disabled period.
+            vb.autoRange()
+        else:
+            vb.disableAutoRange(axis=pg.ViewBox.XYAxes)
+        self._save_axis_settings()
+
+    # ── Persistence ───────────────────────────────────────────────────
+
+    def _settings(self):
+        from PyQt5.QtCore import QSettings
+        return QSettings(
+            QSettings.IniFormat, QSettings.UserScope,
+            "HoribaIHR550", "RTC",
+        )
+
+    def _restore_axis_settings(self) -> None:
+        s = self._settings()
+        axis = s.value("x_axis")
+        if axis is not None:
+            idx = self.x_axis_combo.findText(str(axis))
+            if idx >= 0:
+                self.x_axis_combo.blockSignals(True)
+                self.x_axis_combo.setCurrentIndex(idx)
+                self.x_axis_combo.blockSignals(False)
+                # Make sure the label reflects the restored selection.
+                self.plot_item.setLabels(bottom=self.x_axis_combo.currentText())
+        autoscale = s.value("autoscale")
+        if autoscale is not None:
+            on = (str(autoscale).lower() in ("true", "1"))
+            self.autoscale_button.blockSignals(True)
+            self.autoscale_button.setChecked(on)
+            self.autoscale_button.blockSignals(False)
+            self._on_autoscale_toggled(on)
+
+    def _save_axis_settings(self) -> None:
+        s = self._settings()
+        s.setValue("x_axis", self.x_axis_combo.currentText())
+        s.setValue("autoscale", self.autoscale_button.isChecked())
+        s.sync()
 
     def enumconv(self, param_name: str, value: str):
         if param_name == 'grating':
@@ -395,12 +479,8 @@ class LiveViewWindow(QWidget):
             if len(x_data) > 0 and len(y_data) > 0:
                 self.latest_wavelength = np.array(x_data)
                 self.latest_intensity = np.array(y_data)
-                
-                if self.wavenumber_checkbox.isChecked():
-                    x_plot = self.wavelength_to_wavenumber(self.latest_wavelength)
-                else:
-                    x_plot = self.latest_wavelength
-                
+                x_plot, label = self._convert_x(self.latest_wavelength)
+                self.plot_item.setLabels(bottom=label)
                 self.plot_data_item.setData(x_plot, self.latest_intensity)
         except Exception as e:
             logger.warning(f"Failed to update plot: {e}")
