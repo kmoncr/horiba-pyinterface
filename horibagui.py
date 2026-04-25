@@ -15,8 +15,23 @@ from PyQt5.QtWidgets import (
     QRadioButton, QButtonGroup, QLineEdit, QSplitter,
     QDialog,
 )
-from PyQt5.QtCore import pyqtSignal, QTimer, Qt
+from PyQt5.QtCore import pyqtSignal, QTimer, Qt, QSettings
 from PyQt5.QtGui import QColor
+
+QSETTINGS_ORG = "HoribaIHR550"
+QSETTINGS_APP_MAIN = "MainWindow"
+
+
+def _make_settings(app: str) -> QSettings:
+    """Return a QSettings backed by IniFormat/UserScope.
+
+    The explicit constructor is what lets the test fixture's setPath
+    redirect take effect on Windows; the (org, app)-only constructor
+    falls through to NativeFormat (the registry).
+    """
+    return QSettings(
+        QSettings.IniFormat, QSettings.UserScope, QSETTINGS_ORG, app
+    )
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from pymeasure.experiment import Results
@@ -610,6 +625,11 @@ class MainWindow(ManagedWindow):
             # 5 s timer reactivating itself the next time it ticks.
             pass
 
+        # Restore persisted parameter values after every widget exists,
+        # then wire change signals so future edits save automatically.
+        self._load_persistent_settings()
+        self._wire_persistent_widgets()
+
     # ── Tools UI ──────────────────────────────────────────────────────
 
     def setup_tools_ui(self):
@@ -995,12 +1015,106 @@ class MainWindow(ManagedWindow):
         logger.info(f"Generated filename: {file_path}")
         return file_path
 
+    # ── Persistence ───────────────────────────────────────────────────
+
+    def _persistent_param_widgets(self) -> dict:
+        """Map of QSettings key → (widget, getter_name, setter_name).
+
+        Every entry must accept .value()/.setValue() (pymeasure inputs)
+        OR be a QComboBox using currentText/setCurrentText.
+        """
+        spec = {
+            # pymeasure inputs (QSpinBox / QDoubleSpinBox / QComboBox)
+            "excitation_wavelength": (self.inputs.excitation_wavelength, "value", "setValue"),
+            "center_wavelength":     (self.inputs.center_wavelength,     "value", "setValue"),
+            "exposure":              (self.inputs.exposure,              "value", "setValue"),
+            "slit_position":         (self.inputs.slit_position,         "value", "setValue"),
+            "gain":                  (self.inputs.gain,                  "value", "setValue"),
+            "speed":                 (self.inputs.speed,                 "value", "setValue"),
+            "ccd_y_origin":          (self.inputs.ccd_y_origin,          "value", "setValue"),
+            "ccd_y_size":            (self.inputs.ccd_y_size,            "value", "setValue"),
+            "ccd_x_bin":             (self.inputs.ccd_x_bin,             "value", "setValue"),
+            # GUI-only widgets
+            "grating":               (self.grating_combo,                "currentText", "setCurrentText"),
+            "scans_per_angle":       (self.scans_per_angle_input,        "value", "setValue"),
+            "set_angle_input":       (self.set_angle_input,              "value", "setValue"),
+            "thorlabs_angle_input":  (self.thorlabs_angle_input,         "value", "setValue"),
+        }
+        return spec
+
+    def _load_persistent_settings(self) -> None:
+        """Restore each persisted widget from QSettings.
+
+        Mirrors the Andor camera_settings pattern: blocks signals while
+        setting values so we don't trigger a save loop on startup.
+        """
+        s = _make_settings(QSETTINGS_APP_MAIN)
+        for key, (widget, _getter, setter) in self._persistent_param_widgets().items():
+            stored = s.value(key)
+            if stored is None:
+                continue
+            widget.blockSignals(True)
+            try:
+                set_fn = getattr(widget, setter)
+                # QSettings returns strings on Windows ini backend; cast
+                # numerics by inspecting the current value's type.
+                current = getattr(widget, _getter)()
+                if isinstance(current, int) and not isinstance(current, bool):
+                    set_fn(int(stored))
+                elif isinstance(current, float):
+                    set_fn(float(stored))
+                else:
+                    set_fn(stored)
+            except Exception as e:
+                logger.warning(f"failed to restore {key!r}: {e}")
+            finally:
+                widget.blockSignals(False)
+
+    def _save_persistent_settings(self) -> None:
+        """Write every persisted widget's current value to QSettings."""
+        s = _make_settings(QSETTINGS_APP_MAIN)
+        for key, (widget, getter, _setter) in self._persistent_param_widgets().items():
+            try:
+                s.setValue(key, getattr(widget, getter)())
+            except Exception as e:
+                logger.warning(f"failed to save {key!r}: {e}")
+        s.sync()
+
+    def _wire_persistent_widgets(self) -> None:
+        """Connect each persisted widget's change signal to a single
+        slot that writes its value back to QSettings."""
+        for key, (widget, getter, _setter) in self._persistent_param_widgets().items():
+            self._connect_widget_save(widget, key, getter)
+
+    def _connect_widget_save(self, widget, key: str, getter: str) -> None:
+        def _save(*_args):
+            s = _make_settings(QSETTINGS_APP_MAIN)
+            try:
+                s.setValue(key, getattr(widget, getter)())
+            except Exception as e:
+                logger.warning(f"failed to save {key!r}: {e}")
+        # Pick the right change signal for the widget type.
+        for sig_name in ("valueChanged", "currentTextChanged", "textChanged"):
+            sig = getattr(widget, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.connect(_save)
+                    return
+                except (TypeError, AttributeError):
+                    continue
+
     def closeEvent(self, event):
         logger.info("Closing application...")
         if hasattr(self, '_is_closing') and self._is_closing:
             event.accept()
             return
         self._is_closing = True
+
+        # Persist current parameter values before tearing down.
+        try:
+            self._save_persistent_settings()
+        except Exception as e:
+            logger.warning(f"failed to persist settings on close: {e}")
 
         # Close any open child windows first; they share our controller
         # and loop and will skip their own shutdown because they don't
