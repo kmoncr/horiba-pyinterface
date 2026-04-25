@@ -600,6 +600,16 @@ class MainWindow(ManagedWindow):
         self.temp_timer.timeout.connect(self.trigger_temperature_update)
         self.temp_timer.start(5000)
 
+        # Resume the temp poll once a queued experiment finishes or is
+        # aborted. Pymeasure's Manager exposes these as Qt signals.
+        try:
+            self.manager.finished.connect(lambda *_: self._resume_temp_poll())
+            self.manager.aborted.connect(lambda *_: self._resume_temp_poll())
+        except AttributeError:
+            # Older pymeasure without these signals — fall back to the
+            # 5 s timer reactivating itself the next time it ticks.
+            pass
+
     # ── Tools UI ──────────────────────────────────────────────────────
 
     def setup_tools_ui(self):
@@ -646,6 +656,9 @@ class MainWindow(ManagedWindow):
             self.temp_label.setText("CCD Temp: Disconnected")
             return
         if hasattr(self, 'manager') and self.manager.is_running():
+            # Suspend rather than no-op: the queued scan and the temp
+            # poll otherwise race for the single ICL websocket.
+            self.temp_timer.stop()
             return
         # Don't stack another request if the previous one hasn't returned yet
         if self._temp_pending:
@@ -655,6 +668,11 @@ class MainWindow(ManagedWindow):
             self.controller.get_ccd_temperature(), self.loop
         )
         future.add_done_callback(self._handle_temp_result)
+
+    def _resume_temp_poll(self):
+        """Restart the 5 s temperature poll if it was paused."""
+        if hasattr(self, "temp_timer") and not self.temp_timer.isActive():
+            self.temp_timer.start(5000)
 
     def _handle_temp_result(self, fut):
         try:
@@ -829,9 +847,16 @@ class MainWindow(ManagedWindow):
 
         We block the inputs widget rather than poking pymeasure's
         internal queue button so this works regardless of where
-        ManagedWindow placed the button.
+        ManagedWindow placed the button. The CCD temperature poll
+        also pauses while the child is acquiring — overlapping SDK
+        calls on the single ICL websocket can deadlock.
         """
         self.inputs.setEnabled(not busy)
+        if busy:
+            if hasattr(self, "temp_timer"):
+                self.temp_timer.stop()
+        else:
+            self._resume_temp_poll()
 
     # ── Event loop helpers ────────────────────────────────────────────
 
