@@ -20,6 +20,8 @@ from PyQt5.QtGui import QColor
 
 QSETTINGS_ORG = "HoribaIHR550"
 QSETTINGS_APP_MAIN = "MainWindow"
+QSETTINGS_APP_PATHS = "Paths"
+QSETTINGS_KEY_LAST_DIR = "last_save_dir"
 
 
 def _make_settings(app: str) -> QSettings:
@@ -600,6 +602,19 @@ class MainWindow(ManagedWindow):
 
         self.file_input.extensions = ['csv']
 
+        # Restore last-used save directory if we have one. Pymeasure's
+        # file_input has a writable .directory property; we set it
+        # before any queue() call so newly queued experiments land in
+        # the user's preferred folder. Fall back gracefully if the
+        # stored path no longer exists.
+        try:
+            paths = _make_settings(QSETTINGS_APP_PATHS)
+            saved = paths.value(QSETTINGS_KEY_LAST_DIR)
+            if saved and os.path.isdir(saved):
+                self.file_input.directory = saved
+        except Exception as e:
+            logger.warning(f"could not restore last save dir: {e}")
+
         # Insert sequencer below the Queue/Abort buttons after pymeasure
         # has finished building the rest of the panel.
         self._dual_seq = DualStageSequencer()
@@ -964,6 +979,15 @@ class MainWindow(ManagedWindow):
 
             experiment = self.new_experiment(Results(current_procedure, filename))
             self.manager.queue(experiment)
+
+        # Persist the directory the user just queued into so the next
+        # launch defaults to it instead of cwd.
+        try:
+            paths = _make_settings(QSETTINGS_APP_PATHS)
+            paths.setValue(QSETTINGS_KEY_LAST_DIR, self.file_input.directory)
+            paths.sync()
+        except Exception as e:
+            logger.warning(f"could not persist last save dir: {e}")
 
         self.update_current_angle()
         sleep(0.5)

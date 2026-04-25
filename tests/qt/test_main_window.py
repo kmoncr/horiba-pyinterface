@@ -134,3 +134,62 @@ def test_main_window_settings_round_trip(qtbot, mock_horiba_sdk, monkeypatch):
     assert win2.inputs.ccd_x_bin.value() == 2
     assert win2.grating_combo.currentText() == 'First (1800 grooves/mm)'
     assert win2.scans_per_angle_input.value() == 11
+
+
+# ── Save directory persistence (commit 11) ────────────────────────────
+
+def test_save_dir_default_from_qsettings(tmp_path, qtbot, mock_horiba_sdk, monkeypatch):
+    """When QSettings("HoribaIHR550","Paths").last_save_dir is set
+    AND the directory exists, MainWindow's file_input.directory must
+    default to it. The existence guard prevents pymeasure from being
+    handed a stale path that points at a removed USB drive."""
+    from PyQt5.QtCore import QSettings
+
+    saved_dir = tmp_path / "saved_data"
+    saved_dir.mkdir()  # production never restores a non-existent dir
+    target = str(saved_dir)
+    s = QSettings(QSettings.IniFormat, QSettings.UserScope,
+                  "HoribaIHR550", "Paths")
+    s.setValue("last_save_dir", target)
+    s.sync()
+
+    win = _build_main_window(qtbot, monkeypatch)
+    assert win.file_input.directory == target
+
+
+def test_save_dir_written_after_queue(tmp_path, qtbot, mock_horiba_sdk, monkeypatch):
+    """Calling MainWindow.queue() with a non-default directory must
+    update QSettings("HoribaIHR550","Paths").last_save_dir."""
+    from PyQt5.QtCore import QSettings
+    from unittest.mock import MagicMock
+
+    win = _build_main_window(qtbot, monkeypatch)
+    target = str(tmp_path / "outbox")
+    (tmp_path / "outbox").mkdir()
+    win.file_input.directory = target
+
+    win.manager = MagicMock()
+    win.scans_per_angle_input.setValue(1)
+
+    # Use a real HoribaSpectrumProcedure so pymeasure's Results
+    # type-check passes; we just don't run it.
+    from horibaprocedure import HoribaSpectrumProcedure
+    def fake_make_procedure(rotation_angle=None, thorlabs_angle=None):
+        proc = HoribaSpectrumProcedure()
+        proc.rotation_angle = 0.0
+        proc.thorlabs_angle = 0.0
+        return proc
+
+    win.make_procedure = fake_make_procedure
+    win.new_experiment = MagicMock()
+
+    # Stop pymeasure Results from actually opening a file.
+    import pymeasure.experiment.results as pm_results
+    monkeypatch.setattr(pm_results.Results, "reload",
+                        lambda self: None)
+
+    win.queue()
+
+    s = QSettings(QSettings.IniFormat, QSettings.UserScope,
+                  "HoribaIHR550", "Paths")
+    assert s.value("last_save_dir") == target
