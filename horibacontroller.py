@@ -36,6 +36,13 @@ class HoribaController:
         # Prevents temperature polls from hitting the CCD mid-acquisition.
         self._acquiring = False
 
+        # Single asyncio.Lock serialising every SDK call against the
+        # ICL websocket. Built lazily on first use because the lock must
+        # belong to whichever event loop ends up driving the controller
+        # (the GUI runs one in a background thread; tests use asyncio.run
+        # which builds a fresh loop per call).
+        self._sdk_lock: asyncio.Lock | None = None
+
         self._current_params = {
             'wavelength': None,
             'grating': None,
@@ -77,6 +84,12 @@ class HoribaController:
             except Exception as e:
                 logger.warning(f"failed to connect to Thorlabs K10CR2: {e}")
 
+    def _lock(self) -> asyncio.Lock:
+        """Return the SDK lock, building it lazily on the active loop."""
+        if self._sdk_lock is None:
+            self._sdk_lock = asyncio.Lock()
+        return self._sdk_lock
+
     async def connect_hardware(self):
         """Connect to spectrometer."""
         if self.is_connected:
@@ -84,44 +97,45 @@ class HoribaController:
 
         logger.info("connecting to spectrometer...")
 
-        if self.dm:
-            try:
+        async with self._lock():
+            if self.dm:
+                try:
+                    await self.dm.stop()
+                except Exception:
+                    pass
+                self.dm = None
+
+            self.dm = DeviceManager(start_icl=True)
+            await self.dm.start()
+
+            logger.info("Waiting for hardware discovery...")
+
+            for _ in range(20):
+                if self.dm.monochromators and self.dm.charge_coupled_devices:
+                    break
+                await asyncio.sleep(0.5)
+
+            monos = self.dm.monochromators
+            ccds = self.dm.charge_coupled_devices
+
+            if not monos or not ccds:
                 await self.dm.stop()
-            except Exception:
-                pass
-            self.dm = None
+                raise RuntimeError(f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})")
 
-        self.dm = DeviceManager(start_icl=True)
-        await self.dm.start()
+            self.mono = monos[0]
+            self.ccd = ccds[0]
 
-        logger.info("Waiting for hardware discovery...")
-
-        for _ in range(20):
-            if self.dm.monochromators and self.dm.charge_coupled_devices:
-                break
-            await asyncio.sleep(0.5)
-
-        monos = self.dm.monochromators
-        ccds = self.dm.charge_coupled_devices
-
-        if not monos or not ccds:
-            await self.dm.stop()
-            raise RuntimeError(f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})")
-
-        self.mono = monos[0]
-        self.ccd = ccds[0]
-
-        await self.mono.open()
-        await self._wait_for_mono(self.mono)
-        await self.ccd.open()
-        await self._wait_for_ccd(self.ccd)
-
-        if not await self.mono.is_initialized():
-            await self.mono.initialize()
+            await self.mono.open()
             await self._wait_for_mono(self.mono)
+            await self.ccd.open()
+            await self._wait_for_ccd(self.ccd)
 
-        self.is_connected = True
-        logger.success("spectrometer initialisation complete")
+            if not await self.mono.is_initialized():
+                await self.mono.initialize()
+                await self._wait_for_mono(self.mono)
+
+            self.is_connected = True
+            logger.success("spectrometer initialisation complete")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
@@ -159,63 +173,64 @@ class HoribaController:
 
         self._acquiring = True
         try:
-            if self._current_params['grating'] != grating:
-                logger.debug(f"Setting grating to {grating}")
-                await self.mono.set_turret_grating(grating)
-                await self._wait_for_mono(self.mono)
-                self._current_params['grating'] = grating
+            async with self._lock():
+                if self._current_params['grating'] != grating:
+                    logger.debug(f"Setting grating to {grating}")
+                    await self.mono.set_turret_grating(grating)
+                    await self._wait_for_mono(self.mono)
+                    self._current_params['grating'] = grating
 
-            if self._current_params['wavelength'] != center_wavelength:
-                logger.debug(f"Moving to {center_wavelength} nm")
-                await self.mono.move_to_target_wavelength(center_wavelength)
-                await self._wait_for_mono(self.mono)
-                self._current_params['wavelength'] = center_wavelength
+                if self._current_params['wavelength'] != center_wavelength:
+                    logger.debug(f"Moving to {center_wavelength} nm")
+                    await self.mono.move_to_target_wavelength(center_wavelength)
+                    await self._wait_for_mono(self.mono)
+                    self._current_params['wavelength'] = center_wavelength
 
-            if self._current_params['slit'] != slit_position:
-                logger.debug(f"Setting slit to {slit_position} mm")
-                await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
-                await self._wait_for_mono(self.mono)
-                self._current_params['slit'] = slit_position
+                if self._current_params['slit'] != slit_position:
+                    logger.debug(f"Setting slit to {slit_position} mm")
+                    await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
+                    await self._wait_for_mono(self.mono)
+                    self._current_params['slit'] = slit_position
 
-            if self._current_params['mirror'] != 'AXIAL':
-                await self.mono.set_mirror_position(
-                    self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL
+                if self._current_params['mirror'] != 'AXIAL':
+                    await self.mono.set_mirror_position(
+                        self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL
+                    )
+                    await self._wait_for_mono(self.mono)
+                    self._current_params['mirror'] = 'AXIAL'
+
+                cfg    = await self.ccd.get_configuration()
+                chip_x = int(cfg["chipWidth"])
+
+                await self.ccd.set_acquisition_count(1)
+                await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
+                await self.ccd.set_exposure_time(int(exposure * 1000))
+                await self.ccd.set_gain(gain)
+                await self.ccd.set_speed(speed)
+                await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
+                await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
+                await self.ccd.set_region_of_interest(
+                    1, 0, int(y_origin), chip_x, int(y_size), int(x_bin), int(y_size)
                 )
-                await self._wait_for_mono(self.mono)
-                self._current_params['mirror'] = 'AXIAL'
+                await self.ccd.set_x_axis_conversion_type(
+                    XAxisConversionType.FROM_ICL_SETTINGS_INI
+                )
 
-            cfg    = await self.ccd.get_configuration()
-            chip_x = int(cfg["chipWidth"])
+                ready = await self.ccd.get_acquisition_ready()
+                if not ready:
+                    raise RuntimeError("CCD not ready for acquisition")
 
-            await self.ccd.set_acquisition_count(1)
-            await self.ccd.set_center_wavelength(self.mono.id(), center_wavelength)
-            await self.ccd.set_exposure_time(int(exposure * 1000))
-            await self.ccd.set_gain(gain)
-            await self.ccd.set_speed(speed)
-            await self.ccd.set_timer_resolution(TimerResolution.MILLISECONDS)
-            await self.ccd.set_acquisition_format(1, AcquisitionFormat.SPECTRA)
-            await self.ccd.set_region_of_interest(
-                1, 0, int(y_origin), chip_x, int(y_size), int(x_bin), int(y_size)
-            )
-            await self.ccd.set_x_axis_conversion_type(
-                XAxisConversionType.FROM_ICL_SETTINGS_INI
-            )
+                await self.ccd.acquisition_start(open_shutter=True)
 
-            ready = await self.ccd.get_acquisition_ready()
-            if not ready:
-                raise RuntimeError("CCD not ready for acquisition")
+                if exposure > 0.1:
+                    await asyncio.sleep(exposure * 0.9)
+                await self._wait_for_ccd(self.ccd)
 
-            await self.ccd.acquisition_start(open_shutter=True)
+                raw = await self.ccd.get_acquisition_data()
+                x = raw[0]["roi"][0]["xData"]
+                y = raw[0]["roi"][0]["yData"]
 
-            if exposure > 0.1:
-                await asyncio.sleep(exposure * 0.9)
-            await self._wait_for_ccd(self.ccd)
-
-            raw = await self.ccd.get_acquisition_data()
-            x = raw[0]["roi"][0]["xData"]
-            y = raw[0]["roi"][0]["yData"]
-
-            return x, y
+                return x, y
 
         except Exception:
             logger.exception("failed to acquire spectrum")
@@ -286,11 +301,30 @@ class HoribaController:
             return -999.0
         if self.is_connected and self.ccd:
             try:
-                return await self.ccd.get_chip_temperature()
+                async with self._lock():
+                    return await self.ccd.get_chip_temperature()
             except Exception as e:
                 logger.warning(f"Failed to read temperature: {e}")
                 return -999.0
         return 0.0
+
+    # ── Acquisition abort ─────────────────────────────────────────────
+
+    async def acquisition_abort(self) -> None:
+        """Cancel any in-flight CCD acquisition and wait until idle.
+
+        Safe to call when disconnected or while no acquisition is
+        running; it returns immediately in that case.
+        """
+        if not (self.is_connected and self.ccd):
+            return
+        async with self._lock():
+            await self.ccd.acquisition_abort()
+            # Poll up to ~2 s for the busy flag to drop.
+            for _ in range(40):
+                if not await self.ccd.get_acquisition_busy():
+                    return
+                await asyncio.sleep(0.05)
 
     # ── Internal helpers ──────────────────────────────────────────────
 
@@ -322,12 +356,13 @@ class HoribaController:
         # Spectrometer
         if self.is_connected:
             try:
-                if self.ccd:
-                    await self.ccd.close()
-                if self.mono:
-                    await self.mono.close()
-                if self.dm:
-                    await self.dm.stop()
+                async with self._lock():
+                    if self.ccd:
+                        await self.ccd.close()
+                    if self.mono:
+                        await self.mono.close()
+                    if self.dm:
+                        await self.dm.stop()
             except Exception as e:
                 logger.error(f"error closing devices: {e}")
             self.is_connected = False
