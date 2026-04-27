@@ -1,7 +1,20 @@
 import asyncio
+import functools
 from typing import Any
 import numpy as np
 from loguru import logger
+
+# The horiba_sdk websocket uses the default ``websockets.connect``
+# settings, which cap incoming messages at 1 MiB and run a keepalive
+# ping every 20 s. A full-chip image frame (1024×256 doubles) exceeds
+# the size cap and the keepalive can also kick in mid-acquisition,
+# closing the connection. Disable both limits before any horiba_sdk
+# code imports it. This patch must run BEFORE the SDK imports below.
+import websockets
+websockets.connect = functools.partial(
+    websockets.connect, max_size=None, ping_interval=None
+)
+
 from horiba_sdk.devices.device_manager import DeviceManager
 from horiba_sdk.devices.single_devices import ChargeCoupledDevice, Monochromator
 from horiba_sdk.core.timer_resolution import TimerResolution

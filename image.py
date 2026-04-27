@@ -11,7 +11,6 @@ its own controller and background loop, preserving direct script use.
 from __future__ import annotations
 
 import asyncio
-import functools
 import sys
 import threading
 from typing import Optional
@@ -26,12 +25,8 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox,
 )
 
-# Match the existing image.py behaviour of disabling websocket size /
-# ping limits — large image frames can exceed the default frame size.
-import websockets
-websockets.connect = functools.partial(
-    websockets.connect, max_size=None, ping_interval=None
-)
+# (websockets size/ping patch lives at the top of horibacontroller.py
+# now so it applies to every entrypoint, not just standalone image.py.)
 
 from horibaprocedure import GAIN_CHOICES, SPEED_CHOICES, PARAM_MAP
 
