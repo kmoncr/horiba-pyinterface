@@ -174,18 +174,18 @@ class LiveViewWindow(QWidget):
         self.center_wavelength.setSuffix(" nm")
 
         self.exposure = QDoubleSpinBox()
-        self.exposure.setValue(1.0)
         self.exposure.setMinimum(0.01)
         self.exposure.setMaximum(60)
         self.exposure.setDecimals(2)
         self.exposure.setSuffix(" s")
+        self.exposure.setValue(1.0)
 
         self.slit_position = QDoubleSpinBox()
-        self.slit_position.setValue(0.1)
         self.slit_position.setMinimum(0)
         self.slit_position.setMaximum(10)
         self.slit_position.setDecimals(2)
         self.slit_position.setSuffix(" mm")
+        self.slit_position.setValue(0.1)
 
         self.grating_combo = QComboBox()
         self.grating_combo.addItems(GRATING_CHOICES.keys())
@@ -210,19 +210,19 @@ class LiveViewWindow(QWidget):
         self.speed_combo.setCurrentText('50 kHz')  
         
         self.ccd_y_origin = QSpinBox()
-        self.ccd_y_origin.setValue(0)  
         self.ccd_y_origin.setMinimum(0)
         self.ccd_y_origin.setMaximum(256)
-        
+        self.ccd_y_origin.setValue(0)
+
         self.ccd_y_size = QSpinBox()
-        self.ccd_y_size.setValue(256)  
         self.ccd_y_size.setMinimum(1)
-        self.ccd_y_size.setMaximum(256) 
+        self.ccd_y_size.setMaximum(256)
+        self.ccd_y_size.setValue(256)
 
         self.ccd_x_bin = QSpinBox()
-        self.ccd_x_bin.setValue(1) 
         self.ccd_x_bin.setMinimum(1)
         self.ccd_x_bin.setMaximum(1024)
+        self.ccd_x_bin.setValue(1)
         
         ccd_layout.addRow("Gain:", self.gain_combo)
         ccd_layout.addRow("Speed:", self.speed_combo)
@@ -237,11 +237,11 @@ class LiveViewWindow(QWidget):
         rot_layout = QFormLayout()
         
         self.rotation_angle = QDoubleSpinBox()
-        self.rotation_angle.setValue(self.controller.last_angle)
         self.rotation_angle.setMinimum(-360)
         self.rotation_angle.setMaximum(360)
         self.rotation_angle.setDecimals(2)
         self.rotation_angle.setSuffix(" deg")
+        self.rotation_angle.setValue(self.controller.last_angle)
         
         self.set_angle_button = QPushButton("Go to Angle")
         self.set_angle_button.clicked.connect(self.go_to_angle)
