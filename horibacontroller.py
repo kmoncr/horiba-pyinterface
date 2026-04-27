@@ -453,17 +453,29 @@ class HoribaController:
         """Cancel any in-flight CCD acquisition and wait until idle.
 
         Safe to call when disconnected or while no acquisition is
-        running; it returns immediately in that case.
+        running; in those cases this is a no-op. The ICL rejects
+        ``acquisition_abort`` with "CCD error: command failed" when
+        nothing is acquiring, so we only fire the abort if the busy
+        flag is actually set.
         """
         if not (self.is_connected and self.ccd):
             return
         async with self._lock():
-            await self.ccd.acquisition_abort()
-            # Poll up to ~2 s for the busy flag to drop.
-            for _ in range(40):
+            try:
                 if not await self.ccd.get_acquisition_busy():
                     return
-                await asyncio.sleep(0.05)
+                await self.ccd.acquisition_abort()
+                # Poll up to ~2 s for the busy flag to drop.
+                for _ in range(40):
+                    if not await self.ccd.get_acquisition_busy():
+                        return
+                    await asyncio.sleep(0.05)
+            except Exception as e:
+                # Don't propagate — the caller is typically closeEvent
+                # and we don't want to hide a real shutdown failure
+                # behind an abort that was racing the natural end of
+                # an acquisition.
+                logger.warning(f"acquisition_abort suppressed: {e}")
 
     # ── Internal helpers ──────────────────────────────────────────────
 

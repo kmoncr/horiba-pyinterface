@@ -19,6 +19,11 @@ import numpy as np
 import pyqtgraph as pg
 from loguru import logger
 
+# Make pyqtgraph's image widgets use numpy's axis convention:
+# arr[row, col] = arr[y, x]. The default col-major would otherwise
+# render a (256, 1024) chip image 256 wide × 1024 tall.
+pg.setConfigOptions(imageAxisOrder='row-major')
+
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,

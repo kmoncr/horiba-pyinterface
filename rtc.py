@@ -14,6 +14,12 @@ from PyQt5.QtWidgets import (
 import pyqtgraph as pg
 import numpy as np
 
+# Make pyqtgraph's image widgets interpret arrays the way numpy does:
+# arr[row, col] = arr[y, x]. Without this, ImageView treats axis 0 as
+# X and a (256, 1024) array displays 256 wide × 1024 tall — opposite
+# of the actual chip orientation.
+pg.setConfigOptions(imageAxisOrder='row-major')
+
 try:
     from horibacontroller import HoribaController
     from horibaprocedure import (
