@@ -15,8 +15,25 @@ from PyQt5.QtWidgets import (
     QRadioButton, QButtonGroup, QLineEdit, QSplitter,
     QDialog,
 )
-from PyQt5.QtCore import pyqtSignal, QTimer, Qt
+from PyQt5.QtCore import pyqtSignal, QTimer, Qt, QSettings
 from PyQt5.QtGui import QColor
+
+QSETTINGS_ORG = "HoribaIHR550"
+QSETTINGS_APP_MAIN = "MainWindow"
+QSETTINGS_APP_PATHS = "Paths"
+QSETTINGS_KEY_LAST_DIR = "last_save_dir"
+
+
+def _make_settings(app: str) -> QSettings:
+    """Return a QSettings backed by IniFormat/UserScope.
+
+    The explicit constructor is what lets the test fixture's setPath
+    redirect take effect on Windows; the (org, app)-only constructor
+    falls through to NativeFormat (the registry).
+    """
+    return QSettings(
+        QSettings.IniFormat, QSettings.UserScope, QSETTINGS_ORG, app
+    )
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from pymeasure.experiment import Results
@@ -585,6 +602,19 @@ class MainWindow(ManagedWindow):
 
         self.file_input.extensions = ['csv']
 
+        # Restore last-used save directory if we have one. Pymeasure's
+        # file_input has a writable .directory property; we set it
+        # before any queue() call so newly queued experiments land in
+        # the user's preferred folder. Fall back gracefully if the
+        # stored path no longer exists.
+        try:
+            paths = _make_settings(QSETTINGS_APP_PATHS)
+            saved = paths.value(QSETTINGS_KEY_LAST_DIR)
+            if saved and os.path.isdir(saved):
+                self.file_input.directory = saved
+        except Exception as e:
+            logger.warning(f"could not restore last save dir: {e}")
+
         # Insert sequencer below the Queue/Abort buttons after pymeasure
         # has finished building the rest of the panel.
         self._dual_seq = DualStageSequencer()
@@ -600,6 +630,21 @@ class MainWindow(ManagedWindow):
         self.temp_timer.timeout.connect(self.trigger_temperature_update)
         self.temp_timer.start(5000)
 
+        # Resume the temp poll once a queued experiment finishes or is
+        # aborted. Pymeasure's Manager exposes these as Qt signals.
+        try:
+            self.manager.finished.connect(lambda *_: self._resume_temp_poll())
+            self.manager.aborted.connect(lambda *_: self._resume_temp_poll())
+        except AttributeError:
+            # Older pymeasure without these signals — fall back to the
+            # 5 s timer reactivating itself the next time it ticks.
+            pass
+
+        # Restore persisted parameter values after every widget exists,
+        # then wire change signals so future edits save automatically.
+        self._load_persistent_settings()
+        self._wire_persistent_widgets()
+
     # ── Tools UI ──────────────────────────────────────────────────────
 
     def setup_tools_ui(self):
@@ -613,13 +658,17 @@ class MainWindow(ManagedWindow):
         tools_layout.addWidget(self.temp_label, stretch=1)
 
         self.btn_rtc   = QPushButton("RTC")
-        self.btn_rtc.clicked.connect(lambda: self.launch_external_tool("rtc.py"))
+        self.btn_rtc.clicked.connect(self._open_rtc_window)
         self.btn_image = QPushButton("Image Scan")
-        self.btn_image.clicked.connect(lambda: self.launch_external_tool("image.py"))
+        self.btn_image.clicked.connect(self._open_image_window)
         tools_layout.addWidget(self.btn_rtc)
         tools_layout.addWidget(self.btn_image)
 
         self.tools_group.setLayout(tools_layout)
+
+        # Lazy handles to in-process child windows.
+        self._rtc_win = None
+        self._image_win = None
 
     def _insert_sequencer_at_bottom(self):
         """Append the dual-stage sequencer below the Queue/Abort buttons."""
@@ -642,6 +691,9 @@ class MainWindow(ManagedWindow):
             self.temp_label.setText("CCD Temp: Disconnected")
             return
         if hasattr(self, 'manager') and self.manager.is_running():
+            # Suspend rather than no-op: the queued scan and the temp
+            # poll otherwise race for the single ICL websocket.
+            self.temp_timer.stop()
             return
         # Don't stack another request if the previous one hasn't returned yet
         if self._temp_pending:
@@ -652,13 +704,23 @@ class MainWindow(ManagedWindow):
         )
         future.add_done_callback(self._handle_temp_result)
 
+    def _resume_temp_poll(self):
+        """Restart the 5 s temperature poll if it was paused."""
+        if hasattr(self, "temp_timer") and not self.temp_timer.isActive():
+            self.temp_timer.start(5000)
+
     def _handle_temp_result(self, fut):
-        self._temp_pending = False
         try:
-            temp = fut.result()
-            self.temp_updated_signal.emit(temp)
-        except Exception:
-            self.temp_updated_signal.emit(-999.0)
+            try:
+                temp = fut.result()
+                self.temp_updated_signal.emit(temp)
+            except Exception:
+                self.temp_updated_signal.emit(-999.0)
+        finally:
+            # finally: even if an unexpected error escapes the inner
+            # try, the pending flag must reset — otherwise temp polls
+            # silently stop forever after the first orphaned future.
+            self._temp_pending = False
 
     def on_temp_ui_update(self, temp):
         if temp == -999.0:
@@ -776,42 +838,60 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_thorlabs_angle_result)
 
-    # ── External tool launcher ────────────────────────────────────────
+    # ── In-process child windows ──────────────────────────────────────
 
-    def launch_external_tool(self, script_name):
-        if hasattr(self, 'timer') and self.timer.isActive():
-            self.timer.stop()
+    def _open_rtc_window(self):
+        """Open the live-view (RTC) window in-process, sharing the
+        controller and event loop. No subprocess, no ICL teardown."""
+        from rtc import LiveViewWindow
 
-        async def run_tool_sequence():
-            if self.controller.is_connected:
-                await self.controller.shutdown()
-                self.controller.is_connected = False
-                await asyncio.sleep(2.0)
+        if self._rtc_win is None:
+            self._rtc_win = LiveViewWindow(
+                controller=self.controller, loop=self.loop, parent=self,
+            )
+            self._rtc_win.scanning_changed.connect(self._on_child_scanning_changed)
+            # Forget the handle once the user actually closes it so a
+            # later click rebuilds with fresh state.
+            self._rtc_win.destroyed.connect(lambda *_: self._on_child_destroyed("rtc"))
+        self._rtc_win.show()
+        self._rtc_win.raise_()
+        self._rtc_win.activateWindow()
 
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    sys.executable, script_name
-                )
-                await process.wait()
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                logger.error(f"failed to run tool: {e}")
+    def _open_image_window(self):
+        """Open the image-mode window in-process, sharing the controller
+        and event loop."""
+        from image import ImageWindow
 
-            try:
-                await self.controller.connect_hardware()
-                if self.controller.rotation_stage:
-                    self.controller.last_angle = self.controller.rotation_stage.degree
-                QTimer.singleShot(0, self.on_tool_sequence_finished)
-            except Exception as e:
-                logger.error(f"Failed to reconnect hardware: {e}")
+        if self._image_win is None:
+            self._image_win = ImageWindow(
+                controller=self.controller, loop=self.loop, parent=self,
+            )
+            self._image_win.destroyed.connect(lambda *_: self._on_child_destroyed("image"))
+        self._image_win.show()
+        self._image_win.raise_()
+        self._image_win.activateWindow()
 
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(run_tool_sequence(), self.loop)
+    def _on_child_destroyed(self, which: str) -> None:
+        if which == "rtc":
+            self._rtc_win = None
+        elif which == "image":
+            self._image_win = None
 
-    def on_tool_sequence_finished(self):
-        self.angle_updated_signal.emit(self.controller.last_angle)
-        if hasattr(self, 'timer') and not self.timer.isActive():
-            self.timer.start()
+    def _on_child_scanning_changed(self, busy: bool) -> None:
+        """Disable the Queue/inputs panel while a live RTC scan runs.
+
+        We block the inputs widget rather than poking pymeasure's
+        internal queue button so this works regardless of where
+        ManagedWindow placed the button. The CCD temperature poll
+        also pauses while the child is acquiring — overlapping SDK
+        calls on the single ICL websocket can deadlock.
+        """
+        self.inputs.setEnabled(not busy)
+        if busy:
+            if hasattr(self, "temp_timer"):
+                self.temp_timer.stop()
+        else:
+            self._resume_temp_poll()
 
     # ── Event loop helpers ────────────────────────────────────────────
 
@@ -834,29 +914,41 @@ class MainWindow(ManagedWindow):
             logger.error(f"Error running async task: {e}")
             raise
 
-    def do_go_to_angle(self):
-        target_angle = self.set_angle_input.value()
-        logger.info(f"GUI: Setting angle to {target_angle}°")
-        
-        async def _set_and_update():
-            await self.controller.set_rotation_angle(target_angle)
-            return await self.controller.get_rotation_angle()
-
-        future = asyncio.run_coroutine_threadsafe(_set_and_update(), self.loop)
-        future.add_done_callback(self._handle_angle_result)
-
-    def do_return_to_origin(self):
-        logger.info("GUI: Returning to origin")
-        
-        async def _home_and_update():
-            await self.controller.return_rotation_to_origin()
-            return await self.controller.get_rotation_angle()
-
-        future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
-        future.add_done_callback(self._handle_angle_result)
-
     def update_grating(self, text):
         logger.info(f"Grating changed to {text}")
+
+    # ── Plot axis ergonomics (commit 14) ──────────────────────────────
+
+    # Friendly RTC-style label → underlying DATA_COLUMNS column.
+    _PLOT_AXIS_LABEL_TO_COLUMN = {
+        "Wavelength (nm)":      "Wavelength",
+        "Raman shift (cm⁻¹)": "Wavenumber",
+        "Energy (eV)":          "Energy",
+        "Raman shift (eV)":     "Raman Energy",
+    }
+
+    def set_plot_x_axis(self, label: str) -> None:
+        """Drive pymeasure's plot_widget.columns_x by friendly label.
+
+        Mirrors rtc.LiveViewWindow's x-axis combo so the same
+        terminology works in both windows.
+        """
+        column = self._PLOT_AXIS_LABEL_TO_COLUMN.get(label)
+        if column is None:
+            logger.warning(f"unknown plot axis label: {label!r}")
+            return
+        pw = getattr(self, "plot_widget", None)
+        if pw is None and getattr(self, "widget_list", None):
+            pw = self.widget_list[0]
+        if pw is None:
+            return
+        idx = pw.columns_x.findText(column)
+        if idx >= 0:
+            pw.columns_x.setCurrentIndex(idx)
+            try:
+                pw.update_x_column(idx)
+            except AttributeError:
+                pass
 
     # ── Procedure factory ─────────────────────────────────────────────
 
@@ -921,6 +1013,15 @@ class MainWindow(ManagedWindow):
             experiment = self.new_experiment(Results(current_procedure, filename))
             self.manager.queue(experiment)
 
+        # Persist the directory the user just queued into so the next
+        # launch defaults to it instead of cwd.
+        try:
+            paths = _make_settings(QSETTINGS_APP_PATHS)
+            paths.setValue(QSETTINGS_KEY_LAST_DIR, self.file_input.directory)
+            paths.sync()
+        except Exception as e:
+            logger.warning(f"could not persist last save dir: {e}")
+
         self.update_current_angle()
         sleep(0.5)
 
@@ -971,6 +1072,94 @@ class MainWindow(ManagedWindow):
         logger.info(f"Generated filename: {file_path}")
         return file_path
 
+    # ── Persistence ───────────────────────────────────────────────────
+
+    def _persistent_param_widgets(self) -> dict:
+        """Map of QSettings key → (widget, getter_name, setter_name).
+
+        Every entry must accept .value()/.setValue() (pymeasure inputs)
+        OR be a QComboBox using currentText/setCurrentText.
+        """
+        spec = {
+            # pymeasure inputs (QSpinBox / QDoubleSpinBox / QComboBox)
+            "excitation_wavelength": (self.inputs.excitation_wavelength, "value", "setValue"),
+            "center_wavelength":     (self.inputs.center_wavelength,     "value", "setValue"),
+            "exposure":              (self.inputs.exposure,              "value", "setValue"),
+            "slit_position":         (self.inputs.slit_position,         "value", "setValue"),
+            "gain":                  (self.inputs.gain,                  "value", "setValue"),
+            "speed":                 (self.inputs.speed,                 "value", "setValue"),
+            "ccd_y_origin":          (self.inputs.ccd_y_origin,          "value", "setValue"),
+            "ccd_y_size":            (self.inputs.ccd_y_size,            "value", "setValue"),
+            "ccd_x_bin":             (self.inputs.ccd_x_bin,             "value", "setValue"),
+            # GUI-only widgets
+            "grating":               (self.grating_combo,                "currentText", "setCurrentText"),
+            "scans_per_angle":       (self.scans_per_angle_input,        "value", "setValue"),
+            "set_angle_input":       (self.set_angle_input,              "value", "setValue"),
+            "thorlabs_angle_input":  (self.thorlabs_angle_input,         "value", "setValue"),
+        }
+        return spec
+
+    def _load_persistent_settings(self) -> None:
+        """Restore each persisted widget from QSettings.
+
+        Mirrors the Andor camera_settings pattern: blocks signals while
+        setting values so we don't trigger a save loop on startup.
+        """
+        s = _make_settings(QSETTINGS_APP_MAIN)
+        for key, (widget, _getter, setter) in self._persistent_param_widgets().items():
+            stored = s.value(key)
+            if stored is None:
+                continue
+            widget.blockSignals(True)
+            try:
+                set_fn = getattr(widget, setter)
+                # QSettings returns strings on Windows ini backend; cast
+                # numerics by inspecting the current value's type.
+                current = getattr(widget, _getter)()
+                if isinstance(current, int) and not isinstance(current, bool):
+                    set_fn(int(stored))
+                elif isinstance(current, float):
+                    set_fn(float(stored))
+                else:
+                    set_fn(stored)
+            except Exception as e:
+                logger.warning(f"failed to restore {key!r}: {e}")
+            finally:
+                widget.blockSignals(False)
+
+    def _save_persistent_settings(self) -> None:
+        """Write every persisted widget's current value to QSettings."""
+        s = _make_settings(QSETTINGS_APP_MAIN)
+        for key, (widget, getter, _setter) in self._persistent_param_widgets().items():
+            try:
+                s.setValue(key, getattr(widget, getter)())
+            except Exception as e:
+                logger.warning(f"failed to save {key!r}: {e}")
+        s.sync()
+
+    def _wire_persistent_widgets(self) -> None:
+        """Connect each persisted widget's change signal to a single
+        slot that writes its value back to QSettings."""
+        for key, (widget, getter, _setter) in self._persistent_param_widgets().items():
+            self._connect_widget_save(widget, key, getter)
+
+    def _connect_widget_save(self, widget, key: str, getter: str) -> None:
+        def _save(*_args):
+            s = _make_settings(QSETTINGS_APP_MAIN)
+            try:
+                s.setValue(key, getattr(widget, getter)())
+            except Exception as e:
+                logger.warning(f"failed to save {key!r}: {e}")
+        # Pick the right change signal for the widget type.
+        for sig_name in ("valueChanged", "currentTextChanged", "textChanged"):
+            sig = getattr(widget, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.connect(_save)
+                    return
+                except (TypeError, AttributeError):
+                    continue
+
     def closeEvent(self, event):
         logger.info("Closing application...")
         if hasattr(self, '_is_closing') and self._is_closing:
@@ -978,7 +1167,31 @@ class MainWindow(ManagedWindow):
             return
         self._is_closing = True
 
-        logger.info("Closing application...")
+        # Persist current parameter values before tearing down.
+        try:
+            self._save_persistent_settings()
+        except Exception as e:
+            logger.warning(f"failed to persist settings on close: {e}")
+
+        # Close any open child windows first; they share our controller
+        # and loop and will skip their own shutdown because they don't
+        # own them.
+        for child in (self._rtc_win, self._image_win):
+            if child is not None:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+
+        # Make sure no acquisition is in flight before shutting down.
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.controller.acquisition_abort(), self.loop
+            )
+            future.result(timeout=5)
+        except Exception as e:
+            logger.warning(f"acquisition_abort during shutdown failed: {e}")
+
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self.controller.shutdown(), self.loop
@@ -995,6 +1208,11 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
+    from logging_setup import setup_file_logging
+    log_path = setup_file_logging("horibagui")
+    logger.info(f"Logging to {log_path}")
+    print(f"[horibagui] log file: {log_path}", flush=True)
+
     app = QtWidgets.QApplication([])
     window = MainWindow()
     window.show()

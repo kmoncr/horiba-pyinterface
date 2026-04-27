@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Run-time log files written by logging_setup.setup_file_logging
+logs/

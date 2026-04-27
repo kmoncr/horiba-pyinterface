@@ -202,10 +202,7 @@ dependencies = [
     { name = "pyqt5-qt5" },
     { name = "pyqt5-sip" },
     { name = "pyqtgraph" },
-<<<<<<< HEAD
-=======
     { name = "pythonnet" },
->>>>>>> thorlabs-stage
     { name = "thorlabspm100" },
 ]
 
@@ -219,10 +216,7 @@ requires-dist = [
     { name = "pyqt5-qt5", specifier = "==5.15.2" },
     { name = "pyqt5-sip", specifier = "==12.13.0" },
     { name = "pyqtgraph", specifier = "==0.12.4" },
-<<<<<<< HEAD
-=======
     { name = "pythonnet", specifier = ">=3.0.3" },
->>>>>>> thorlabs-stage
     { name = "thorlabspm100", specifier = ">=1.2.2" },
 ]
 
