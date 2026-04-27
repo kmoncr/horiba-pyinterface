@@ -575,6 +575,11 @@ class LiveViewWindow(QWidget):
         event.accept()
 
 if __name__ == "__main__":
+    from logging_setup import setup_file_logging
+    log_path = setup_file_logging("rtc")
+    logger.info(f"Logging to {log_path}")
+    print(f"[rtc] log file: {log_path}", flush=True)
+
     app = QApplication(sys.argv)
     window = LiveViewWindow()
     window.show()

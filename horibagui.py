@@ -1208,6 +1208,11 @@ class MainWindow(ManagedWindow):
 
 
 if __name__ == "__main__":
+    from logging_setup import setup_file_logging
+    log_path = setup_file_logging("horibagui")
+    logger.info(f"Logging to {log_path}")
+    print(f"[horibagui] log file: {log_path}", flush=True)
+
     app = QtWidgets.QApplication([])
     window = MainWindow()
     window.show()

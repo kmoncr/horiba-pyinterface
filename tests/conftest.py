@@ -1,11 +1,16 @@
 """Shared pytest fixtures for the horiba project.
 
-Tests must run with no real hardware. We monkey-patch the SDK classes
-that ``horibacontroller`` imports so that ``HoribaController(...)`` and
-its methods exercise pure-Python mocks instead of the ICL websocket.
+By default tests run with no real hardware. We monkey-patch the SDK
+classes that ``horibacontroller`` imports so that
+``HoribaController(...)`` and its methods exercise pure-Python mocks
+instead of the ICL websocket.
 
-QSettings is redirected to a per-test tmp directory so persistence tests
-do not pollute the real user registry.
+The opt-in suite under ``tests/hardware/`` is gated behind the
+``--run-hardware`` CLI flag and talks to the real ICL + spectrometer
++ stages. Those tests are skipped unless that flag is passed.
+
+QSettings is redirected to a per-test tmp directory so persistence
+tests do not pollute the real user registry.
 """
 
 from __future__ import annotations
@@ -16,6 +21,25 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+# ── CLI flag + marker registration ─────────────────────────────────────
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-hardware",
+        action="store_true",
+        default=False,
+        help="run tests in tests/hardware/ that talk to real hardware "
+             "(ICL must be installed and devices must be powered on)",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "hardware: requires real ICL+spectrometer (use --run-hardware to enable)",
+    )
 
 # Mark the entire test session as a mock environment. Production code can
 # read this if it ever needs to skip a real hardware path.

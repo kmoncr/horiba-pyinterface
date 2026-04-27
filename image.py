@@ -278,6 +278,11 @@ class ImageWindow(QMainWindow):
 
 def main_standalone() -> int:
     """Entry point for ``python image.py``."""
+    from logging_setup import setup_file_logging
+    log_path = setup_file_logging("image")
+    logger.info(f"Logging to {log_path}")
+    print(f"[image] log file: {log_path}", flush=True)
+
     app = QApplication(sys.argv)
     win = ImageWindow()
     win.show()
