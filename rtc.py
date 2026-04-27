@@ -37,7 +37,11 @@ class LiveViewWindow(QWidget):
     def __init__(self, controller: 'HoribaController | None' = None,
                  loop: 'asyncio.AbstractEventLoop | None' = None,
                  parent=None):
-        super().__init__(parent)
+        # Pass Qt.Window so the widget always opens as a top-level
+        # window even when a parent is set. Without this flag, a
+        # parented QWidget gets embedded inside the parent and shows
+        # up overlaying the main GUI.
+        super().__init__(parent, QtCore.Qt.Window)
 
         # Constructor injection lets the main GUI share its controller
         # and event loop, eliminating the slow ICL teardown/restart
