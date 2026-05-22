@@ -284,6 +284,9 @@ class HoribaController:
             # there is a transient ICL hiccup. The reconnect path in
             # connect_hardware handles a stale device manager safely.
             self.is_connected = False
+            # Clear param cache so all CCD/mono settings are re-applied
+            # after reconnect — the freshly-opened hardware has defaults.
+            self._current_params = {'wavelength': None, 'grating': None, 'slit': None, 'mirror': None}
             raise
         finally:
             self._acquiring = False
@@ -396,10 +399,9 @@ class HoribaController:
 
     async def get_rotation_angle(self) -> float:
         if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
-            self.last_angle = await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.rotation_stage.degree
             )
-            return self.last_angle
         return self.last_angle
 
     async def return_rotation_to_origin(self) -> None:
@@ -420,8 +422,7 @@ class HoribaController:
 
     async def get_thorlabs_angle(self) -> float:
         if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
-            self.last_thorlabs_angle = self.thorlabs_stage.degree
-            return self.last_thorlabs_angle
+            return self.thorlabs_stage.degree
         return self.last_thorlabs_angle
 
     async def home_thorlabs_stage(self) -> None:
