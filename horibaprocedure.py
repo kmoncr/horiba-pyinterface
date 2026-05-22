@@ -61,7 +61,15 @@ class HoribaSpectrumProcedure(Procedure):
     ccd_y_size = IntegerParameter("CCD Y Size", units="px", default= 256, minimum=0)
     ccd_x_bin = IntegerParameter("CCD X Bin", units="px", default= 1, minimum=1)
     
-    DATA_COLUMNS = ["Wavenumber", "Intensity", "Wavelength", "Scan Number"]
+    # 1239.841984 nm·eV is the vacuum hc value used to convert
+    # wavelength (nm) → photon energy (eV).
+    HC_NM_EV = 1239.841984
+
+    DATA_COLUMNS = [
+        "Wavenumber", "Intensity", "Wavelength",
+        "Energy", "Raman Energy",
+        "Scan Number",
+    ]
 
     def __init__(self):
         super().__init__()
@@ -134,18 +142,36 @@ class HoribaSpectrumProcedure(Procedure):
         if isinstance(y_data, list) and len(y_data) == 1:
             y_data = y_data[0]
         
+        # Pre-compute the excitation photon energy once (eV).
+        try:
+            excitation_energy = self.HC_NM_EV / float(self.excitation_wavelength)
+        except (ZeroDivisionError, TypeError):
+            excitation_energy = None
+
         for x, y in zip(x_data, y_data):
             try:
                 wavenumber = (1.0 / self.excitation_wavelength - 1.0 / x) * 1e7
             except Exception as e:
                 logger.error(f"Failed to calculate wavenumber: {e}")
                 wavenumber = None
-            
+
+            try:
+                energy = self.HC_NM_EV / x  # photon energy in eV
+            except (ZeroDivisionError, TypeError):
+                energy = None
+
+            if energy is not None and excitation_energy is not None:
+                raman_energy = excitation_energy - energy
+            else:
+                raman_energy = None
+
             self.emit('results', {
                 "Wavenumber": wavenumber,
                 "Intensity": y,
                 "Wavelength": x,
-                "Scan Number": self.scan_number
+                "Energy": energy,
+                "Raman Energy": raman_energy,
+                "Scan Number": self.scan_number,
             })
         
         logger.success(f"Completed Scan {self.scan_number} at OptoSigma {self.rotation_angle}°, "

@@ -9,10 +9,20 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
+<<<<<<< HEAD
     QCheckBox, QLabel
+=======
+    QCheckBox, QStackedWidget,
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
 )
 import pyqtgraph as pg
 import numpy as np
+
+# Make pyqtgraph's image widgets interpret arrays the way numpy does:
+# arr[row, col] = arr[y, x]. Without this, ImageView treats axis 0 as
+# X and a (256, 1024) array displays 256 wide × 1024 tall — opposite
+# of the actual chip orientation.
+pg.setConfigOptions(imageAxisOrder='row-major')
 
 try:
     from horibacontroller import HoribaController
@@ -28,6 +38,7 @@ except ImportError:
 
 class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
+<<<<<<< HEAD
     scan_error = QtCore.pyqtSignal(str)
     connection_changed = QtCore.pyqtSignal(bool, str)  # (ok, message)
     temp_updated = QtCore.pyqtSignal(float)
@@ -45,6 +56,48 @@ class LiveViewWindow(QWidget):
         self.is_scanning = False
         self._hw_ready = False
         self._temp_pending = False
+=======
+    image_ready = QtCore.pyqtSignal(object)         # 2-D ndarray
+    scan_error = QtCore.pyqtSignal(str)
+    # Emits True when a live scan starts, False when it stops. The main
+    # window listens to this to disable its queue while RTC is busy.
+    scanning_changed = QtCore.pyqtSignal(bool)
+
+    def __init__(self, controller: 'HoribaController | None' = None,
+                 loop: 'asyncio.AbstractEventLoop | None' = None,
+                 parent=None):
+        # Pass Qt.Window so the widget always opens as a top-level
+        # window even when a parent is set. Without this flag, a
+        # parented QWidget gets embedded inside the parent and shows
+        # up overlaying the main GUI.
+        super().__init__(parent, QtCore.Qt.Window)
+
+        # Constructor injection lets the main GUI share its controller
+        # and event loop, eliminating the slow ICL teardown/restart
+        # that was happening when RTC ran as a separate subprocess.
+        # When invoked standalone (python rtc.py), build our own.
+        if controller is not None and loop is not None:
+            self.controller = controller
+            self.loop = loop
+            self.loop_thread = None
+            self._owns_controller = False
+        else:
+            self.controller = HoribaController(enable_logging=True)
+            self.loop = None
+            self.loop_thread = None
+            self._start_event_loop()
+            self._owns_controller = True
+
+            logger.info("starting hardware connection...")
+            try:
+                self.run_async_task(self.controller.connect_hardware(), timeout=60)
+            except Exception as e:
+                logger.error(f"Failed to initialize hardware on startup: {e}")
+
+        self.worker_thread = None
+        self.stop_event = threading.Event()
+        self.is_scanning = False
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
         
         self.latest_wavelength = None
         self.latest_intensity = None
@@ -57,13 +110,26 @@ class LiveViewWindow(QWidget):
         controls_layout = QVBoxLayout()
         controls_layout.setSpacing(15)
         
+        # The display swaps between a 1-D spectrum plot and a 2-D
+        # image view depending on the mode combo (Spectrum / Image).
         plot_widget = QWidget()
         plot_layout = QVBoxLayout()
+        self.plot_stack = QStackedWidget()
+
         self.plot_widget = pg.PlotWidget()
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setLabels(left='Intensity (counts)', bottom='Wavelength (nm)')
-        self.plot_data_item = self.plot_item.plot(pen='y') 
-        plot_layout.addWidget(self.plot_widget)
+        self.plot_data_item = self.plot_item.plot(pen='y')
+        self.plot_stack.addWidget(self.plot_widget)   # index 0 = Spectrum
+
+        self.image_view = pg.ImageView()
+        try:
+            self.image_view.setColorMap(pg.colormap.get('viridis'))
+        except Exception:
+            pass
+        self.plot_stack.addWidget(self.image_view)    # index 1 = Image
+
+        plot_layout.addWidget(self.plot_stack)
         plot_widget.setLayout(plot_layout)
     
         scan_box = QGroupBox("Scan Control")
@@ -94,8 +160,19 @@ class LiveViewWindow(QWidget):
         scan_box.setLayout(scan_outer_layout)
         controls_layout.addWidget(scan_box)
 
+        # Acquisition-mode toggle (1-D spectrum vs 2-D image preview).
+        mode_box = QGroupBox("Acquisition Mode")
+        mode_form = QFormLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Spectrum", "Image"])
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        mode_form.addRow("Mode:", self.mode_combo)
+        mode_box.setLayout(mode_form)
+        controls_layout.addWidget(mode_box)
+
         plot_options_box = QGroupBox("Plot Options")
         plot_options_layout = QFormLayout()
+<<<<<<< HEAD
         
         self.wavenumber_checkbox = QCheckBox()
         self.wavenumber_checkbox.setChecked(False)
@@ -107,6 +184,28 @@ class LiveViewWindow(QWidget):
         self.autoscale_checkbox.stateChanged.connect(self._apply_autoscale)
         plot_options_layout.addRow("Autoscale:", self.autoscale_checkbox)
         
+=======
+
+        self.x_axis_combo = QComboBox()
+        self.x_axis_combo.addItems([
+            "Wavelength (nm)",
+            "Raman shift (cm⁻¹)",
+            "Energy (eV)",
+            "Raman shift (eV)",
+        ])
+        self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
+        plot_options_layout.addRow("X axis:", self.x_axis_combo)
+
+        # Auto-scale toggle. When unchecked, the user's pan/zoom is
+        # preserved across new frames; when re-checked, the next frame
+        # autoscales again.
+        self.autoscale_button = QPushButton("Auto Scale")
+        self.autoscale_button.setCheckable(True)
+        self.autoscale_button.setChecked(True)
+        self.autoscale_button.toggled.connect(self._on_autoscale_toggled)
+        plot_options_layout.addRow(self.autoscale_button)
+
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
         plot_options_box.setLayout(plot_options_layout)
         controls_layout.addWidget(plot_options_box)
 
@@ -131,18 +230,18 @@ class LiveViewWindow(QWidget):
         self.center_wavelength.setSuffix(" nm")
 
         self.exposure = QDoubleSpinBox()
-        self.exposure.setValue(1.0)
         self.exposure.setMinimum(0.01)
         self.exposure.setMaximum(60)
         self.exposure.setDecimals(2)
         self.exposure.setSuffix(" s")
+        self.exposure.setValue(1.0)
 
         self.slit_position = QDoubleSpinBox()
-        self.slit_position.setValue(0.1)
         self.slit_position.setMinimum(0)
         self.slit_position.setMaximum(10)
         self.slit_position.setDecimals(2)
         self.slit_position.setSuffix(" mm")
+        self.slit_position.setValue(0.1)
 
         self.grating_combo = QComboBox()
         self.grating_combo.addItems(GRATING_CHOICES.keys())
@@ -167,19 +266,19 @@ class LiveViewWindow(QWidget):
         self.speed_combo.setCurrentText('50 kHz')  
         
         self.ccd_y_origin = QSpinBox()
-        self.ccd_y_origin.setValue(0)  
         self.ccd_y_origin.setMinimum(0)
         self.ccd_y_origin.setMaximum(256)
-        
+        self.ccd_y_origin.setValue(0)
+
         self.ccd_y_size = QSpinBox()
-        self.ccd_y_size.setValue(256)  
         self.ccd_y_size.setMinimum(1)
-        self.ccd_y_size.setMaximum(256) 
+        self.ccd_y_size.setMaximum(256)
+        self.ccd_y_size.setValue(256)
 
         self.ccd_x_bin = QSpinBox()
-        self.ccd_x_bin.setValue(1) 
         self.ccd_x_bin.setMinimum(1)
         self.ccd_x_bin.setMaximum(1024)
+        self.ccd_x_bin.setValue(1)
         
         ccd_layout.addRow("Gain:", self.gain_combo)
         ccd_layout.addRow("Speed:", self.speed_combo)
@@ -190,6 +289,26 @@ class LiveViewWindow(QWidget):
         ccd_box.setLayout(ccd_layout)
         controls_layout.addWidget(ccd_box)
 
+<<<<<<< HEAD
+=======
+        rot_box = QGroupBox("Rotation Stage")
+        rot_layout = QFormLayout()
+        
+        self.rotation_angle = QDoubleSpinBox()
+        self.rotation_angle.setMinimum(-360)
+        self.rotation_angle.setMaximum(360)
+        self.rotation_angle.setDecimals(2)
+        self.rotation_angle.setSuffix(" deg")
+        self.rotation_angle.setValue(self.controller.last_angle)
+        
+        self.set_angle_button = QPushButton("Go to Angle")
+        self.set_angle_button.clicked.connect(self.go_to_angle)
+        rot_layout.addRow("Target Angle:", self.rotation_angle)
+        rot_layout.addRow(self.set_angle_button)
+        rot_box.setLayout(rot_layout)
+        controls_layout.addWidget(rot_box)
+        
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
         controls_layout.addStretch() 
         
         control_widget = QWidget()
@@ -200,7 +319,9 @@ class LiveViewWindow(QWidget):
         self.setLayout(main_layout)
         
         self.data_ready.connect(self.update_plot)
+        self.image_ready.connect(self.update_image)
         self.scan_error.connect(self.handle_scan_error)
+<<<<<<< HEAD
         self.connection_changed.connect(self._on_connection_changed)
         self.temp_updated.connect(self._on_temp_update)
         self._apply_autoscale()
@@ -220,22 +341,112 @@ class LiveViewWindow(QWidget):
             return wavenumber
         except (ZeroDivisionError, TypeError):
             return wavelength_nm 
+=======
 
-    def toggle_x_axis(self):
-        if self.wavenumber_checkbox.isChecked():
-            self.plot_item.setLabels(bottom='Raman Shift (cm⁻¹)')
-        else:
-            self.plot_item.setLabels(bottom='Wavelength (nm)')
-        
-        if self.latest_wavelength is not None and self.latest_intensity is not None:
+        # Restore persisted axis choice + autoscale state, then wire
+        # change signals to save automatically. Done last so all
+        # widgets exist.
+        self._restore_axis_settings()
+        logger.info("RTC GUI initialized.")
+
+    # ── Mode handling ─────────────────────────────────────────────────
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
+
+    def _on_mode_changed(self, text: str) -> None:
+        idx = 1 if text == "Image" else 0
+        self.plot_stack.setCurrentIndex(idx)
+
+    @QtCore.pyqtSlot(object)
+    def update_image(self, arr) -> None:
+        try:
+            self.image_view.setImage(arr, autoLevels=True)
+        except Exception as e:
+            logger.warning(f"Failed to update image: {e}")
+
+    # ── X-axis conversion ─────────────────────────────────────────────
+
+    HC_NM_EV = 1239.841984  # vacuum hc in nm·eV
+
+    def _convert_x(self, wl_nm):
+        """Map wavelength array (nm) → (x_array, axis_label) according
+        to the current x-axis combo selection.
+
+        np.array(...) always copies — we never mutate the caller's array.
+        """
+        arr = np.array(wl_nm, dtype=float)
+        mode = self.x_axis_combo.currentText()
+        exc = self.excitation_wavelength.value()
+        if mode == "Wavelength (nm)":
+            return arr, mode
+        if mode == "Raman shift (cm⁻¹)":
+            try:
+                return (1.0 / exc - 1.0 / arr) * 1e7, mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        if mode == "Energy (eV)":
+            try:
+                return self.HC_NM_EV / arr, mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        if mode == "Raman shift (eV)":
+            try:
+                return (self.HC_NM_EV / exc) - (self.HC_NM_EV / arr), mode
+            except (ZeroDivisionError, ValueError):
+                return arr, mode
+        return arr, mode
+
+    def _on_x_axis_changed(self, _text: str) -> None:
+        # Update the axis label and re-render the latest data.
+        if self.latest_wavelength is not None:
             self.update_plot(self.latest_wavelength, self.latest_intensity)
-        self._apply_autoscale()
+        self._save_axis_settings()
 
-    def _apply_autoscale(self, *_):
+    # ── Auto-scale toggle ─────────────────────────────────────────────
+
+    def _on_autoscale_toggled(self, checked: bool) -> None:
         vb = self.plot_item.getViewBox()
-        enable = self.autoscale_checkbox.isChecked()
-        vb.enableAutoRange(axis='x', enable=enable)
-        vb.enableAutoRange(axis='y', enable=enable)
+        if checked:
+            vb.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
+            # Force an immediate refit so the next pushed frame
+            # supersedes any stale view range from the disabled period.
+            vb.autoRange()
+        else:
+            vb.disableAutoRange(axis=pg.ViewBox.XYAxes)
+        self._save_axis_settings()
+
+    # ── Persistence ───────────────────────────────────────────────────
+
+    def _settings(self):
+        from PyQt5.QtCore import QSettings
+        return QSettings(
+            QSettings.IniFormat, QSettings.UserScope,
+            "HoribaIHR550", "RTC",
+        )
+
+    def _restore_axis_settings(self) -> None:
+        s = self._settings()
+        axis = s.value("x_axis")
+        if axis is not None:
+            idx = self.x_axis_combo.findText(str(axis))
+            if idx >= 0:
+                self.x_axis_combo.blockSignals(True)
+                self.x_axis_combo.setCurrentIndex(idx)
+                self.x_axis_combo.blockSignals(False)
+                # Make sure the label reflects the restored selection.
+                self.plot_item.setLabels(bottom=self.x_axis_combo.currentText())
+        autoscale = s.value("autoscale")
+        if autoscale is not None:
+            on = (str(autoscale).lower() in ("true", "1"))
+            self.autoscale_button.blockSignals(True)
+            self.autoscale_button.setChecked(on)
+            self.autoscale_button.blockSignals(False)
+            self._on_autoscale_toggled(on)
+
+    def _save_axis_settings(self) -> None:
+        s = self._settings()
+        s.setValue("x_axis", self.x_axis_combo.currentText())
+        s.setValue("autoscale", self.autoscale_button.isChecked())
+        s.sync()
 
     def enumconv(self, param_name: str, value: str):
         if param_name == 'grating':
@@ -294,13 +505,14 @@ class LiveViewWindow(QWidget):
             return
             
         self.stop_event.clear()
-        self.is_scanning = True 
+        self.is_scanning = True
+        self.scanning_changed.emit(True)
         self.worker_thread = threading.Thread(
-            target=self._scan_loop, 
-            args=(params,), 
+            target=self._scan_loop,
+            args=(params,),
             daemon=True
         )
-        
+
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.worker_thread.start()
@@ -311,40 +523,67 @@ class LiveViewWindow(QWidget):
         self.stop_event.set()
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5.0)
-        
-        self.is_scanning = False  
+
+        was_scanning = self.is_scanning
+        self.is_scanning = False
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        if was_scanning:
+            self.scanning_changed.emit(False)
         logger.info("Live scan stopped.")
 
     def _scan_loop(self, params):
+<<<<<<< HEAD
+=======
+        try:
+            logger.info(f"Setting angle to {params['rotation_angle']}° for scan")
+            self.run_async_task(
+                self.controller.set_rotation_angle(params['rotation_angle'])
+            )
+        except Exception as e:
+            logger.error(f"Failed to set rotation angle: {e}")
+            self.scan_error.emit(f"Failed to set rotation angle: {e}")
+            return
+
+        # The mode combo lives on the GUI thread; capturing its value
+        # once per acquisition lets the user flip mode mid-scan and the
+        # next iteration picks it up.
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
         acquisition_count = 0
         while not self.stop_event.is_set():
             try:
                 acquisition_count += 1
-                logger.info(f"Starting acquisition #{acquisition_count}")
+                mode = self.mode_combo.currentText()
+                logger.info(f"Starting acquisition #{acquisition_count} ({mode})")
                 start_time = time.time()
-                
-                x, y = self.run_async_task(
-                    self.controller.acquire_spectrum(**params),
-                    timeout=60 
-                )
-                
-                if isinstance(x, list) and len(x) == 1:
-                    x = x[0]
-                if isinstance(y, list) and len(y) == 1:
-                    y = y[0]
 
-                if not self.stop_event.is_set():
-                    self.data_ready.emit(x, y)
-                    logger.success(f"Acquisition #{acquisition_count} completed successfully")
-                
+                if mode == "Image":
+                    arr = self.run_async_task(
+                        self.controller.acquire_image(**params),
+                        timeout=120,
+                    )
+                    if not self.stop_event.is_set():
+                        self.image_ready.emit(arr)
+                else:
+                    x, y = self.run_async_task(
+                        self.controller.acquire_spectrum(**params),
+                        timeout=60,
+                    )
+                    if isinstance(x, list) and len(x) == 1:
+                        x = x[0]
+                    if isinstance(y, list) and len(y) == 1:
+                        y = y[0]
+                    if not self.stop_event.is_set():
+                        self.data_ready.emit(x, y)
+
+                logger.success(f"Acquisition #{acquisition_count} completed successfully")
+
                 elapsed = time.time() - start_time
                 logger.debug(f"Acquisition took {elapsed:.2f}s")
-                
+
                 if elapsed < 0.1:
                     time.sleep(0.1)
-                        
+
             except Exception as e:
                 logger.error(f"Error in acquisition loop: {e}")
                 self.scan_error.emit(f"Acquisition error: {e}")
@@ -421,42 +660,60 @@ class LiveViewWindow(QWidget):
             if len(x_data) > 0 and len(y_data) > 0:
                 self.latest_wavelength = np.array(x_data)
                 self.latest_intensity = np.array(y_data)
-                
-                if self.wavenumber_checkbox.isChecked():
-                    x_plot = self.wavelength_to_wavenumber(self.latest_wavelength)
-                else:
-                    x_plot = self.latest_wavelength
-                
+                x_plot, label = self._convert_x(self.latest_wavelength)
+                self.plot_item.setLabels(bottom=label)
                 self.plot_data_item.setData(x_plot, self.latest_intensity)
         except Exception as e:
             logger.warning(f"Failed to update plot: {e}")
 
     def closeEvent(self, event):
+<<<<<<< HEAD
         logger.info("Closing application...")
         if hasattr(self, 'temp_timer'):
             self.temp_timer.stop()
+=======
+        logger.info("Closing RTC window...")
+>>>>>>> 952098c98b8dd4c5664ed05d1c7ea5f968429600
         self.stop_scan()
-        
+
+        # Always abort any in-flight CCD acquisition so we never leave
+        # the device busy when control returns to the parent window.
         try:
-            logger.info("Shutting down Horiba controller...")
             future = asyncio.run_coroutine_threadsafe(
-                self.controller.shutdown(), 
-                self.loop
+                self.controller.acquisition_abort(), self.loop
             )
             future.result(timeout=5)
-            logger.info("Controller shutdown complete.")
         except Exception as e:
-            logger.error(f"Error during controller shutdown: {e}")
-        
-        finally:
-            if self.loop and not self.loop.is_closed():
-                self.loop.call_soon_threadsafe(self.loop.stop)
-                if self.loop_thread:
-                    self.loop_thread.join(timeout=2)
-            
+            logger.warning(f"acquisition_abort during close failed: {e}")
+
+        # Only tear down the controller and the event loop when this
+        # window owns them. When the main GUI injected its own
+        # controller, the controller MUST keep running so the next
+        # scan can fire without a 10 s ICL reboot.
+        if self._owns_controller:
+            try:
+                logger.info("Shutting down Horiba controller...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self.controller.shutdown(), self.loop
+                )
+                future.result(timeout=5)
+                logger.info("Controller shutdown complete.")
+            except Exception as e:
+                logger.error(f"Error during controller shutdown: {e}")
+            finally:
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(self.loop.stop)
+                    if self.loop_thread:
+                        self.loop_thread.join(timeout=2)
+
         event.accept()
 
 if __name__ == "__main__":
+    from logging_setup import setup_file_logging
+    log_path = setup_file_logging("rtc")
+    logger.info(f"Logging to {log_path}")
+    print(f"[rtc] log file: {log_path}", flush=True)
+
     app = QApplication(sys.argv)
     window = LiveViewWindow()
     window.show()

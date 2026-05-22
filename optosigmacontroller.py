@@ -37,11 +37,34 @@ class OptoSigmaController:
                 logger.error(f"error disconnecting: {str(e)}")
         self._is_connected = False
         self.controller = None
+
+    def reconnect(self) -> bool:
+        """Bring the stage back up if it was disconnected.
+
+        Returns True when the stage is connected (already-was or
+        successfully reconnected), False on failure.
+        """
+        if self._is_connected and self.controller is not None:
+            return True
+        return self.connect()
     
     def _update_current_position(self):
         if self._is_connected and self.controller:
             try:
-                self._current_position = self.controller.position
+                pos = self.controller.position
+                if pos is None:
+                    logger.warning("Position read returned None; keeping cached value")
+                    return
+                # Reject reads that are implausibly far from the last known position.
+                # More than 10° of deviation without a commanded move is a bad serial read.
+                max_pulse_jump = int(10.0 / self.degree_per_pulse)  # 4000 pulses
+                if abs(pos - self._current_position) > max_pulse_jump:
+                    logger.warning(
+                        f"Suspicious position read: {pos} pulses "
+                        f"(cached {self._current_position}); keeping cached value"
+                    )
+                    return
+                self._current_position = pos
             except Exception as e:
                 logger.error(f"Failed to read position: {str(e)}")
     
