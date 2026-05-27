@@ -181,6 +181,18 @@ class HoribaController:
             self.is_connected = True
             logger.success("spectrometer initialisation complete")
 
+            # Re-apply any persisted grating-zero calibration. The SDK's
+            # mono_setPosition offset is wiped by mono_init (homing), so
+            # we restore it here on every fresh connect.
+            try:
+                from grating_calib import load_saved_calibration
+                saved = load_saved_calibration()
+                if saved is not None:
+                    await self.mono.calibrate_wavelength(saved)
+                    logger.info(f"reapplied saved grating calibration: {saved} nm")
+            except Exception as e:
+                logger.warning(f"failed to reapply saved calibration: {e}")
+
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
             await self.connect_hardware()
@@ -431,6 +443,26 @@ class HoribaController:
                 None, self.thorlabs_stage.home
             )
             self.last_thorlabs_angle = 0.0
+
+    # ── Mono wavelength (read / move / calibrate) ─────────────────────
+
+    async def get_current_wavelength(self) -> float:
+        async with self._lock():
+            return float(await self.mono.get_current_wavelength())
+
+    async def move_to_wavelength(self, wavelength: float) -> None:
+        async with self._lock():
+            await self.mono.move_to_target_wavelength(wavelength)
+            await self._wait_for_mono(self.mono)
+            self._current_params['wavelength'] = wavelength
+
+    async def calibrate_wavelength(self, wavelength: float) -> None:
+        async with self._lock():
+            await self.mono.calibrate_wavelength(wavelength)
+            # Calibration shifts the reported-wavelength frame without
+            # moving the grating. Invalidate the cached wavelength so
+            # the next scan re-issues a move against the new frame.
+            self._current_params['wavelength'] = None
 
     # ── CCD temperature ───────────────────────────────────────────────
 
