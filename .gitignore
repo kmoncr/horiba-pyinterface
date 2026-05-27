@@ -11,3 +11,6 @@ wheels/
 
 # Run-time log files written by logging_setup.setup_file_logging
 logs/
+
+# User-specific grating-zero calibration value (auto-applied on connect)
+grating_calib.json

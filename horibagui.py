@@ -606,14 +606,18 @@ class MainWindow(ManagedWindow):
         self.btn_rtc.clicked.connect(self._open_rtc_window)
         self.btn_image = QPushButton("Image Scan")
         self.btn_image.clicked.connect(self._open_image_window)
+        self.btn_grating_calib = QPushButton("Grating Calib")
+        self.btn_grating_calib.clicked.connect(self._open_grating_calib_window)
         tools_layout.addWidget(self.btn_rtc)
         tools_layout.addWidget(self.btn_image)
+        tools_layout.addWidget(self.btn_grating_calib)
 
         self.tools_group.setLayout(tools_layout)
 
         # Lazy handles to in-process child windows.
         self._rtc_win = None
         self._image_win = None
+        self._grating_calib_win = None
 
     def _insert_sequencer_at_bottom(self):
         parent = self.file_input.parent()
@@ -809,11 +813,28 @@ class MainWindow(ManagedWindow):
         self._image_win.raise_()
         self._image_win.activateWindow()
 
+    def _open_grating_calib_window(self):
+        """Open the grating-zero calibration tool in-process."""
+        from grating_calib import GratingCalibrationWindow
+
+        if self._grating_calib_win is None:
+            self._grating_calib_win = GratingCalibrationWindow(
+                controller=self.controller, loop=self.loop, parent=self,
+            )
+            self._grating_calib_win.destroyed.connect(
+                lambda *_: self._on_child_destroyed("grating_calib")
+            )
+        self._grating_calib_win.show()
+        self._grating_calib_win.raise_()
+        self._grating_calib_win.activateWindow()
+
     def _on_child_destroyed(self, which: str) -> None:
         if which == "rtc":
             self._rtc_win = None
         elif which == "image":
             self._image_win = None
+        elif which == "grating_calib":
+            self._grating_calib_win = None
 
     def _on_child_scanning_changed(self, busy: bool) -> None:
         """Disable the Queue/inputs panel while a live RTC scan runs.
