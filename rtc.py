@@ -9,7 +9,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QPushButton, QDoubleSpinBox, QComboBox, QSpinBox,
-    QCheckBox, QStackedWidget,
+    QCheckBox, QStackedWidget, QLabel,
 )
 import pyqtgraph as pg
 import numpy as np
@@ -36,9 +36,9 @@ class LiveViewWindow(QWidget):
     data_ready = QtCore.pyqtSignal(object, object)  # (x_data, y_data)
     image_ready = QtCore.pyqtSignal(object)         # 2-D ndarray
     scan_error = QtCore.pyqtSignal(str)
-    # Emits True when a live scan starts, False when it stops. The main
-    # window listens to this to disable its queue while RTC is busy.
     scanning_changed = QtCore.pyqtSignal(bool)
+    connection_changed = QtCore.pyqtSignal(bool, str)
+    temp_updated = QtCore.pyqtSignal(float)
 
     def __init__(self, controller: 'HoribaController | None' = None,
                  loop: 'asyncio.AbstractEventLoop | None' = None,
@@ -74,7 +74,9 @@ class LiveViewWindow(QWidget):
         self.worker_thread = None
         self.stop_event = threading.Event()
         self.is_scanning = False
-        
+        self._hw_ready = self.controller.is_connected
+        self._temp_pending = False
+
         self.latest_wavelength = None
         self.latest_intensity = None
         
@@ -280,6 +282,22 @@ class LiveViewWindow(QWidget):
         self.data_ready.connect(self.update_plot)
         self.image_ready.connect(self.update_image)
         self.scan_error.connect(self.handle_scan_error)
+        self.connection_changed.connect(self._on_connection_changed)
+        self.temp_updated.connect(self._on_temp_update)
+
+        # Apply initial hardware state to UI.
+        if self._hw_ready:
+            self.start_button.setEnabled(True)
+            self.status_label.setText("Status: connected")
+            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.status_label.setText("Status: not connected")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+
+        self._temp_timer = QtCore.QTimer(self)
+        self._temp_timer.timeout.connect(self._trigger_temp_update)
+        if self._hw_ready:
+            self._temp_timer.start(5000)
 
         # Restore persisted axis choice + autoscale state, then wire
         # change signals to save automatically. Done last so all
@@ -421,6 +439,7 @@ class LiveViewWindow(QWidget):
             'slit_position': self.slit_position.value(),
             'gain': self.enumconv('gain', self.gain_combo.currentText()),
             'speed': self.enumconv('speed', self.speed_combo.currentText()),
+            'rotation_angle': self.rotation_angle.value(),
             'ccd_y_origin': self.ccd_y_origin.value(),
             'ccd_y_size': self.ccd_y_size.value(),
             'ccd_x_bin': self.ccd_x_bin.value(),
@@ -551,10 +570,12 @@ class LiveViewWindow(QWidget):
             self.status_label.setText("Status: connected")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.start_button.setEnabled(True)
+            self._temp_timer.start(5000)
         else:
             self.status_label.setText(f"Status: not connected — {message}")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
             self.start_button.setEnabled(False)
+            self._temp_timer.stop()
 
     def _trigger_temp_update(self):
         if not self._hw_ready or not self.controller.is_connected:
