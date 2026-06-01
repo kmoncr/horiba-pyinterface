@@ -15,7 +15,7 @@ import pathlib
 from loguru import logger
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel,
     QPushButton, QDoubleSpinBox,
 )
 
@@ -90,25 +90,39 @@ class GratingCalibrationWindow(QWidget):
         root.addWidget(move_group)
 
         # ── Calibrate group ───────────────────────────────────────────
-        calib_group = QGroupBox("2. Calibrate current position")
+        calib_group = QGroupBox("2. Calibrate from an observed peak")
         calib_tip = (
-            "Enter the actual wavelength of the line currently under the "
-            "grating. The reported wavelength scale shifts so this position "
-            "reads that value — the grating does not physically move."
+            "Take a spectrum, read off where a known line actually appears "
+            "(Observed peak) and enter its true wavelength (Should be). The "
+            "reported wavelength scale shifts by the difference so the peak "
+            "lands at its true value — the grating does not physically move."
         )
         calib_group.setToolTip(calib_tip)
-        calib_layout = QHBoxLayout(calib_group)
-        self.calib_input = QDoubleSpinBox()
-        self.calib_input.setRange(200.0, 2000.0)
-        self.calib_input.setDecimals(3)
-        self.calib_input.setSuffix(" nm")
-        self.calib_input.setValue(532.0)
-        self.calib_input.setToolTip(calib_tip)
+        calib_grid = QGridLayout(calib_group)
+
+        self.observed_input = QDoubleSpinBox()
+        self.observed_input.setRange(200.0, 2000.0)
+        self.observed_input.setDecimals(3)
+        self.observed_input.setSuffix(" nm")
+        self.observed_input.setValue(532.0)
+        self.observed_input.setToolTip(calib_tip)
+
+        self.should_input = QDoubleSpinBox()
+        self.should_input.setRange(200.0, 2000.0)
+        self.should_input.setDecimals(3)
+        self.should_input.setSuffix(" nm")
+        self.should_input.setValue(532.0)
+        self.should_input.setToolTip(calib_tip)
+
         self.apply_button = QPushButton("Apply")
         self.apply_button.clicked.connect(self.do_calibrate)
-        calib_layout.addWidget(QLabel("True wavelength:"))
-        calib_layout.addWidget(self.calib_input, stretch=1)
-        calib_layout.addWidget(self.apply_button)
+
+        calib_grid.addWidget(QLabel("Observed peak:"), 0, 0)
+        calib_grid.addWidget(self.observed_input, 0, 1)
+        calib_grid.addWidget(QLabel("Should be:"), 1, 0)
+        calib_grid.addWidget(self.should_input, 1, 1)
+        calib_grid.addWidget(self.apply_button, 0, 2, 2, 1)
+        calib_grid.setColumnStretch(1, 1)
         root.addWidget(calib_group)
 
         # ── Persistence row ───────────────────────────────────────────
@@ -214,25 +228,44 @@ class GratingCalibrationWindow(QWidget):
     def do_calibrate(self):
         if not self._can_dispatch():
             return
-        target = self.calib_input.value()
-        logger.info(f"Grating Calib: applying calibration {target:.3f} nm")
-        self.status_label.setText(f"Applying calibration {target:.3f} nm…")
+        observed = self.observed_input.value()
+        true_nm = self.should_input.value()
+        offset = observed - true_nm
+        logger.info(
+            f"Grating Calib: peak observed {observed:.3f} nm should be "
+            f"{true_nm:.3f} nm (offset {offset:+.3f} nm)"
+        )
+        self.status_label.setText(
+            f"Calibrating: {observed:.3f} → {true_nm:.3f} nm…"
+        )
         self._set_busy(True)
         fut = asyncio.run_coroutine_threadsafe(
-            self._calibrate_then_read(target), self.loop
+            self._calibrate_then_read(observed, true_nm), self.loop
         )
-        fut.add_done_callback(lambda f, t=target: self._calibrate_cb(f, t))
+        fut.add_done_callback(
+            lambda f, o=observed, t=true_nm: self._calibrate_cb(f, o, t)
+        )
 
-    async def _calibrate_then_read(self, target: float) -> float:
-        await self.controller.calibrate_wavelength(target)
+    async def _calibrate_then_read(self, observed: float, true_nm: float) -> float:
+        # A known line shows up at `observed` but is really `true_nm`, so the
+        # whole wavelength axis is off by (observed - true_nm). The SDK's
+        # calibrate sets the grating's *center* anchor, so shift that center
+        # down by the same offset and the peak lands at its true wavelength.
+        center = float(await self.controller.get_current_wavelength())
+        corrected_center = center - (observed - true_nm)
+        await self.controller.calibrate_wavelength(corrected_center)
         return float(await self.controller.get_current_wavelength())
 
-    def _calibrate_cb(self, fut, target: float):
+    def _calibrate_cb(self, fut, observed: float, true_nm: float):
         try:
             nm = float(fut.result())
-            save_calibration(target)
+            # Persist the corrected center anchor; connect_hardware reapplies
+            # it after the SDK wipes calibration on mono_init.
+            save_calibration(nm)
             self.wavelength_read.emit(nm)
-            self.op_finished.emit("calibrate", True, f"{target:.3f}")
+            self.op_finished.emit(
+                "calibrate", True, f"{observed:.3f}→{true_nm:.3f}"
+            )
         except Exception as e:
             self.op_finished.emit("calibrate", False, str(e))
 
@@ -265,8 +298,8 @@ class GratingCalibrationWindow(QWidget):
             return
         if op_name == "calibrate":
             self._refresh_saved_label()
-            logger.success(f"Grating Calib: applied {message} nm")
-            self.status_label.setText(f"Applied calibration {message} nm ✓")
+            logger.success(f"Grating Calib: calibrated peak {message} nm")
+            self.status_label.setText(f"Calibrated peak {message} nm ✓")
         elif op_name == "move":
             self.status_label.setText("Move complete ✓")
         else:  # refresh
