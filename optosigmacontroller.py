@@ -9,6 +9,12 @@ class OptoSigmaController:
         self.controller = None
         self._is_connected = False
         self._current_position = 0
+        # The jump-guard in _update_current_position sanity-checks each read
+        # against _current_position. On a fresh connect there is no valid
+        # baseline yet (it would be the init value 0), so the first read after
+        # connect must be accepted unconditionally to establish the baseline —
+        # otherwise the stage's true position is rejected and we report 0.
+        self._position_primed = False
         # Serializes every access to the GSC01 serial port. The vendor
         # library is a plain serial.Serial with no internal locking, so
         # without this the scan-path setter (run via executor in
@@ -27,7 +33,9 @@ class OptoSigmaController:
                 self._is_connected = True
                 logger.info(f"connected to OptoSigma stage on {self.port}")
 
-                # Get current position
+                # Get current position. Re-prime so this first read is taken
+                # as the baseline rather than checked against the stale cache.
+                self._position_primed = False
                 self._update_current_position()
                 return True
 
@@ -46,6 +54,7 @@ class OptoSigmaController:
                     logger.error(f"error disconnecting: {str(e)}")
             self._is_connected = False
             self.controller = None
+            self._position_primed = False
 
     def reconnect(self) -> bool:
         """Bring the stage back up if it was disconnected.
@@ -65,6 +74,16 @@ class OptoSigmaController:
                 pos = self.controller.position
                 if pos is None:
                     logger.warning("Position read returned None; keeping cached value")
+                    return
+                # First read after connect establishes the baseline; there is no
+                # prior position to sanity-check it against, so accept it as-is.
+                if not self._position_primed:
+                    self._current_position = pos
+                    self._position_primed = True
+                    logger.info(
+                        f"primed stage position: {pos} pulses "
+                        f"({pos * self.degree_per_pulse:.2f}°)"
+                    )
                     return
                 # Reject reads that are implausibly far from the last known position.
                 # More than 10° of deviation without a commanded move is a bad serial read.

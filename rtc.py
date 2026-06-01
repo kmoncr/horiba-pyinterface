@@ -39,6 +39,7 @@ class LiveViewWindow(QWidget):
     scanning_changed = QtCore.pyqtSignal(bool)
     connection_changed = QtCore.pyqtSignal(bool, str)
     temp_updated = QtCore.pyqtSignal(float)
+    angle_updated = QtCore.pyqtSignal(float)
 
     def __init__(self, controller: 'HoribaController | None' = None,
                  loop: 'asyncio.AbstractEventLoop | None' = None,
@@ -284,6 +285,7 @@ class LiveViewWindow(QWidget):
         self.scan_error.connect(self.handle_scan_error)
         self.connection_changed.connect(self._on_connection_changed)
         self.temp_updated.connect(self._on_temp_update)
+        self.angle_updated.connect(self._on_angle_updated)
 
         # Apply initial hardware state to UI.
         if self._hw_ready:
@@ -429,6 +431,32 @@ class LiveViewWindow(QWidget):
         except Exception as e:
             logger.error(f"Error running async task: {e}")
             raise
+
+    def go_to_angle(self):
+        if not self._hw_ready:
+            logger.warning("RTC: cannot move rotation stage — hardware not connected")
+            return
+        target = self.rotation_angle.value()
+
+        async def _set_and_update():
+            await self.controller.set_rotation_angle(target)
+            await asyncio.sleep(0.5)
+            return await self.controller.get_rotation_angle()
+
+        future = asyncio.run_coroutine_threadsafe(_set_and_update(), self.loop)
+        future.add_done_callback(self._handle_angle_result)
+
+    def _handle_angle_result(self, fut):
+        try:
+            angle = fut.result()
+            logger.info(f"RTC: fetched angle from hardware: {angle:.2f}°")
+            self.angle_updated.emit(angle)
+        except Exception as e:
+            logger.error(f"RTC: rotation angle error: {e}")
+
+    @QtCore.pyqtSlot(float)
+    def _on_angle_updated(self, angle):
+        self.rotation_angle.setValue(angle)
 
     def get_current_params(self):
         params = {

@@ -75,7 +75,7 @@ class GratingCalibrationWindow(QWidget):
         root.addLayout(status_row)
 
         # ── Move group ────────────────────────────────────────────────
-        move_group = QGroupBox("Move grating")
+        move_group = QGroupBox("1. Move grating to a reference line")
         move_layout = QHBoxLayout(move_group)
         self.move_input = QDoubleSpinBox()
         self.move_input.setRange(200.0, 2000.0)
@@ -84,19 +84,26 @@ class GratingCalibrationWindow(QWidget):
         self.move_input.setValue(532.0)
         self.move_button = QPushButton("Move")
         self.move_button.clicked.connect(self.do_move)
-        move_layout.addWidget(QLabel("Target:"))
+        move_layout.addWidget(QLabel("Go to:"))
         move_layout.addWidget(self.move_input, stretch=1)
         move_layout.addWidget(self.move_button)
         root.addWidget(move_group)
 
         # ── Calibrate group ───────────────────────────────────────────
-        calib_group = QGroupBox("Calibrate current position")
+        calib_group = QGroupBox("2. Calibrate current position")
+        calib_tip = (
+            "Enter the actual wavelength of the line currently under the "
+            "grating. The reported wavelength scale shifts so this position "
+            "reads that value — the grating does not physically move."
+        )
+        calib_group.setToolTip(calib_tip)
         calib_layout = QHBoxLayout(calib_group)
         self.calib_input = QDoubleSpinBox()
         self.calib_input.setRange(200.0, 2000.0)
         self.calib_input.setDecimals(3)
         self.calib_input.setSuffix(" nm")
         self.calib_input.setValue(532.0)
+        self.calib_input.setToolTip(calib_tip)
         self.apply_button = QPushButton("Apply")
         self.apply_button.clicked.connect(self.do_calibrate)
         calib_layout.addWidget(QLabel("True wavelength:"))
@@ -107,6 +114,12 @@ class GratingCalibrationWindow(QWidget):
         # ── Persistence row ───────────────────────────────────────────
         persist_row = QHBoxLayout()
         self.saved_label = QLabel()
+        # The footer note now lives here as a tooltip to keep the window clean.
+        self.saved_label.setToolTip(
+            "Calibration is held by the SDK only and is wiped when the "
+            "monochromator is re-initialized. The saved value is "
+            "auto-reapplied on next connect."
+        )
         self.forget_button = QPushButton("Forget saved")
         self.forget_button.setFixedWidth(110)
         self.forget_button.clicked.connect(self.do_forget)
@@ -115,15 +128,10 @@ class GratingCalibrationWindow(QWidget):
         root.addLayout(persist_row)
         self._refresh_saved_label()
 
-        # ── Warning footer ────────────────────────────────────────────
-        warning = QLabel(
-            "Calibration is held by the SDK only and is wiped when the "
-            "monochromator is re-initialized. The saved value is "
-            "auto-reapplied on next connect."
-        )
-        warning.setWordWrap(True)
-        warning.setStyleSheet("color: #555; font-style: italic; font-size: 11px;")
-        root.addWidget(warning)
+        # ── Status line ───────────────────────────────────────────────
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #555; font-size: 11px;")
+        root.addWidget(self.status_label)
 
         # Signal wiring
         self.wavelength_read.connect(self._on_wavelength_read)
@@ -156,6 +164,7 @@ class GratingCalibrationWindow(QWidget):
     def refresh_current(self):
         if not self._can_dispatch():
             return
+        self.status_label.setText("Reading current wavelength…")
         self._set_busy(True)
         fut = asyncio.run_coroutine_threadsafe(
             self.controller.get_current_wavelength(), self.loop
@@ -181,6 +190,7 @@ class GratingCalibrationWindow(QWidget):
             return
         target = self.move_input.value()
         logger.info(f"Grating Calib: moving to {target:.3f} nm")
+        self.status_label.setText(f"Moving to {target:.3f} nm…")
         self._set_busy(True)
         fut = asyncio.run_coroutine_threadsafe(
             self._move_then_read(target), self.loop
@@ -206,6 +216,7 @@ class GratingCalibrationWindow(QWidget):
             return
         target = self.calib_input.value()
         logger.info(f"Grating Calib: applying calibration {target:.3f} nm")
+        self.status_label.setText(f"Applying calibration {target:.3f} nm…")
         self._set_busy(True)
         fut = asyncio.run_coroutine_threadsafe(
             self._calibrate_then_read(target), self.loop
@@ -250,7 +261,13 @@ class GratingCalibrationWindow(QWidget):
         self._set_busy(False)
         if not success:
             logger.error(f"Grating Calib: {op_name} failed: {message}")
+            self.status_label.setText(f"{op_name.capitalize()} failed: {message}")
             return
         if op_name == "calibrate":
             self._refresh_saved_label()
             logger.success(f"Grating Calib: applied {message} nm")
+            self.status_label.setText(f"Applied calibration {message} nm ✓")
+        elif op_name == "move":
+            self.status_label.setText("Move complete ✓")
+        else:  # refresh
+            self.status_label.setText("Ready")
