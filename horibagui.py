@@ -1010,6 +1010,12 @@ class MainWindow(ManagedWindow):
 
     def unique_filename(self, directory, base_filename, rotation_angle,
                         thorlabs_angle, scan_number):
+        # Results() opens the file with a plain open(..., 'w'), which does not
+        # create missing parent folders — so a freshly-typed nested directory
+        # (e.g. .../bi2212-5152026/5292026) raises FileNotFoundError. Create
+        # the target directory up front to keep the save path usable.
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         counter   = 1
         opto_str  = f"opto{rotation_angle:.1f}"
         tl_str    = f"thor{thorlabs_angle:.1f}"
