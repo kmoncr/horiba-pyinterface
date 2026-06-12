@@ -11,6 +11,7 @@ from loguru import logger
 # closing the connection. Disable both limits before any horiba_sdk
 # code imports it. This patch must run BEFORE the SDK imports below.
 import websockets
+
 websockets.connect = functools.partial(
     websockets.connect, max_size=None, ping_interval=None
 )
@@ -24,6 +25,7 @@ from optosigmacontroller import OptoSigmaController
 
 try:
     from thorlabscontroller import ThorlabsK10CR2Controller
+
     _THORLABS_AVAILABLE = True
 except ImportError:
     _THORLABS_AVAILABLE = False
@@ -58,10 +60,10 @@ class HoribaController:
         self._sdk_lock: asyncio.Lock | None = None
 
         self._current_params = {
-            'wavelength': None,
-            'grating': None,
-            'slit': None,
-            'mirror': None
+            "wavelength": None,
+            "grating": None,
+            "slit": None,
+            "mirror": None,
         }
 
         # ── OptoSigma rotation stage ─────────────────────────────────
@@ -120,7 +122,9 @@ class HoribaController:
                         try:
                             self.last_angle = self.rotation_stage.degree
                         except Exception as e:
-                            logger.warning(f"could not read OptoSigma angle after reconnect: {e}")
+                            logger.warning(
+                                f"could not read OptoSigma angle after reconnect: {e}"
+                            )
                 except AttributeError:
                     # Older OptoSigmaController without reconnect().
                     pass
@@ -164,7 +168,9 @@ class HoribaController:
 
             if not monos or not ccds:
                 await self.dm.stop()
-                raise RuntimeError(f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})")
+                raise RuntimeError(
+                    f"Hardware not found in time. (Monos: {len(monos)}, CCDs: {len(ccds)})"
+                )
 
             self.mono = monos[0]
             self.ccd = ccds[0]
@@ -174,55 +180,76 @@ class HoribaController:
             await self.ccd.open()
             await self._wait_for_ccd(self.ccd)
 
+            did_init = False
             if not await self.mono.is_initialized():
                 await self.mono.initialize()
                 await self._wait_for_mono(self.mono)
+                did_init = True
 
             self.is_connected = True
             logger.success("spectrometer initialisation complete")
 
-            # Re-apply any persisted grating-zero calibration. The SDK's
-            # mono_setPosition offset is wiped by mono_init (homing), so
-            # we restore it here on every fresh connect.
-            try:
-                from grating_calib import load_saved_calibration
-                saved = load_saved_calibration()
-                if saved is not None:
-                    await self.mono.calibrate_wavelength(saved)
-                    logger.info(f"reapplied saved grating calibration: {saved} nm")
-            except Exception as e:
-                logger.warning(f"failed to reapply saved calibration: {e}")
+            # Re-apply the persisted grating-zero calibration offset, but ONLY
+            # after a fresh mono_init: homing is what wipes the SDK's
+            # mono_setPosition frame. If homing was skipped (ICL already
+            # initialised) the SDK still holds the prior offset, so reapplying
+            # would double it. The saved value is a frame offset (nm), not an
+            # absolute anchor, so shift whatever wavelength the grating homed
+            # to by that offset. We're inside self._lock(), so call self.mono
+            # directly rather than the lock-acquiring wrappers.
+            if did_init:
+                try:
+                    from grating_calib import load_saved_offset
+
+                    offset = load_saved_offset()
+                    if offset:
+                        p = float(await self.mono.get_current_wavelength())
+                        await self.mono.calibrate_wavelength(p + offset)
+                        logger.info(
+                            f"reapplied grating calibration offset {offset:+.3f} nm "
+                            f"(home {p:.3f} -> {p + offset:.3f} nm)"
+                        )
+                except Exception as e:
+                    logger.warning(f"failed to reapply saved calibration: {e}")
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
             await self.connect_hardware()
 
         center_wavelength = kwargs.get("center_wavelength", 780)
-        exposure         = kwargs.get("exposure", 1)
-        grating          = kwargs.get("grating")
-        slit_position    = kwargs.get("slit_position", 0.1)
-        gain             = kwargs.get("gain", 0)
-        speed            = kwargs.get("speed", 2)
-        rotation_angle   = kwargs.get("rotation_angle", None)
-        thorlabs_angle   = kwargs.get("thorlabs_angle", None)
+        exposure = kwargs.get("exposure", 1)
+        grating = kwargs.get("grating")
+        slit_position = kwargs.get("slit_position", 0.1)
+        gain = kwargs.get("gain", 0)
+        speed = kwargs.get("speed", 2)
+        rotation_angle = kwargs.get("rotation_angle", None)
+        thorlabs_angle = kwargs.get("thorlabs_angle", None)
 
         y_origin = kwargs.get("ccd_y_origin", 0)
-        y_size   = kwargs.get("ccd_y_size", 256)
-        x_bin    = kwargs.get("ccd_x_bin", 1)
+        y_size = kwargs.get("ccd_y_size", 256)
+        x_bin = kwargs.get("ccd_x_bin", 1)
 
         # ── Move stages (non-blocking on event loop) ─────────────────
-        if rotation_angle is not None and self.enable_rotation_stage and self.rotation_stage:
+        if (
+            rotation_angle is not None
+            and self.enable_rotation_stage
+            and self.rotation_stage
+        ):
             if abs(self.last_angle - rotation_angle) > 0.01:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: setattr(self.rotation_stage, 'degree', rotation_angle)
+                    None, lambda: setattr(self.rotation_stage, "degree", rotation_angle)
                 )
                 self.last_angle = rotation_angle
                 logger.info(f"OptoSigma angle → {rotation_angle}°")
 
-        if thorlabs_angle is not None and self.enable_thorlabs_stage and self.thorlabs_stage:
+        if (
+            thorlabs_angle is not None
+            and self.enable_thorlabs_stage
+            and self.thorlabs_stage
+        ):
             if abs(self.last_thorlabs_angle - thorlabs_angle) > 0.001:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: setattr(self.thorlabs_stage, 'degree', thorlabs_angle)
+                    None, lambda: setattr(self.thorlabs_stage, "degree", thorlabs_angle)
                 )
                 self.last_thorlabs_angle = thorlabs_angle
                 logger.info(f"Thorlabs angle → {thorlabs_angle}°")
@@ -230,32 +257,32 @@ class HoribaController:
         self._acquiring = True
         try:
             async with self._lock():
-                if self._current_params['grating'] != grating:
+                if self._current_params["grating"] != grating:
                     logger.debug(f"Setting grating to {grating}")
                     await self.mono.set_turret_grating(grating)
                     await self._wait_for_mono(self.mono)
-                    self._current_params['grating'] = grating
+                    self._current_params["grating"] = grating
 
-                if self._current_params['wavelength'] != center_wavelength:
+                if self._current_params["wavelength"] != center_wavelength:
                     logger.debug(f"Moving to {center_wavelength} nm")
                     await self.mono.move_to_target_wavelength(center_wavelength)
                     await self._wait_for_mono(self.mono)
-                    self._current_params['wavelength'] = center_wavelength
+                    self._current_params["wavelength"] = center_wavelength
 
-                if self._current_params['slit'] != slit_position:
+                if self._current_params["slit"] != slit_position:
                     logger.debug(f"Setting slit to {slit_position} mm")
                     await self.mono.set_slit_position(self.mono.Slit.A, slit_position)
                     await self._wait_for_mono(self.mono)
-                    self._current_params['slit'] = slit_position
+                    self._current_params["slit"] = slit_position
 
-                if self._current_params['mirror'] != 'AXIAL':
+                if self._current_params["mirror"] != "AXIAL":
                     await self.mono.set_mirror_position(
                         self.mono.Mirror.ENTRANCE, self.mono.MirrorPosition.AXIAL
                     )
                     await self._wait_for_mono(self.mono)
-                    self._current_params['mirror'] = 'AXIAL'
+                    self._current_params["mirror"] = "AXIAL"
 
-                cfg    = await self.ccd.get_configuration()
+                cfg = await self.ccd.get_configuration()
                 chip_x = int(cfg["chipWidth"])
 
                 await self.ccd.set_acquisition_count(1)
@@ -298,7 +325,12 @@ class HoribaController:
             self.is_connected = False
             # Clear param cache so all CCD/mono settings are re-applied
             # after reconnect — the freshly-opened hardware has defaults.
-            self._current_params = {'wavelength': None, 'grating': None, 'slit': None, 'mirror': None}
+            self._current_params = {
+                "wavelength": None,
+                "grating": None,
+                "slit": None,
+                "mirror": None,
+            }
             raise
         finally:
             self._acquiring = False
@@ -321,25 +353,33 @@ class HoribaController:
         if not self.is_connected:
             await self.connect_hardware()
 
-        exposure       = kwargs.get("exposure", 1.0)
-        gain           = kwargs.get("gain", 0)
-        speed          = kwargs.get("speed", 2)
-        center_wl      = kwargs.get("center_wavelength", None)
+        exposure = kwargs.get("exposure", 1.0)
+        gain = kwargs.get("gain", 0)
+        speed = kwargs.get("speed", 2)
+        center_wl = kwargs.get("center_wavelength", None)
         rotation_angle = kwargs.get("rotation_angle", None)
         thorlabs_angle = kwargs.get("thorlabs_angle", None)
 
         # ── Move stages (outside the SDK lock) ──────────────────────
-        if rotation_angle is not None and self.enable_rotation_stage and self.rotation_stage:
+        if (
+            rotation_angle is not None
+            and self.enable_rotation_stage
+            and self.rotation_stage
+        ):
             if abs(self.last_angle - rotation_angle) > 0.01:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: setattr(self.rotation_stage, 'degree', rotation_angle)
+                    None, lambda: setattr(self.rotation_stage, "degree", rotation_angle)
                 )
                 self.last_angle = rotation_angle
 
-        if thorlabs_angle is not None and self.enable_thorlabs_stage and self.thorlabs_stage:
+        if (
+            thorlabs_angle is not None
+            and self.enable_thorlabs_stage
+            and self.thorlabs_stage
+        ):
             if abs(self.last_thorlabs_angle - thorlabs_angle) > 0.001:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: setattr(self.thorlabs_stage, 'degree', thorlabs_angle)
+                    None, lambda: setattr(self.thorlabs_stage, "degree", thorlabs_angle)
                 )
                 self.last_thorlabs_angle = thorlabs_angle
 
@@ -352,10 +392,10 @@ class HoribaController:
 
                 x_origin = int(kwargs.get("x_origin", 0))
                 y_origin = int(kwargs.get("y_origin", 0))
-                x_size   = int(kwargs.get("x_size", chip_w))
-                y_size   = int(kwargs.get("y_size", chip_h))
-                x_bin    = int(kwargs.get("x_bin", 1))
-                y_bin    = int(kwargs.get("y_bin", 1))
+                x_size = int(kwargs.get("x_size", chip_w))
+                y_size = int(kwargs.get("y_size", chip_h))
+                x_bin = int(kwargs.get("x_bin", 1))
+                y_bin = int(kwargs.get("y_bin", 1))
 
                 await self.ccd.set_acquisition_count(1)
                 if center_wl is not None:
@@ -401,23 +441,35 @@ class HoribaController:
     # ── OptoSigma rotation stage ──────────────────────────────────────
 
     async def set_rotation_angle(self, value: float) -> None:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+        if (
+            self.enable_rotation_stage
+            and self.rotation_stage
+            and self.rotation_stage.is_connected
+        ):
             # Run the blocking serial move in a thread so the event loop
             # stays responsive for temperature polls and GUI updates.
             await asyncio.get_event_loop().run_in_executor(
-                None, lambda: setattr(self.rotation_stage, 'degree', value)
+                None, lambda: setattr(self.rotation_stage, "degree", value)
             )
             self.last_angle = value
 
     async def get_rotation_angle(self) -> float:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+        if (
+            self.enable_rotation_stage
+            and self.rotation_stage
+            and self.rotation_stage.is_connected
+        ):
             return await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.rotation_stage.degree
             )
         return self.last_angle
 
     async def return_rotation_to_origin(self) -> None:
-        if self.enable_rotation_stage and self.rotation_stage and self.rotation_stage.is_connected:
+        if (
+            self.enable_rotation_stage
+            and self.rotation_stage
+            and self.rotation_stage.is_connected
+        ):
             await asyncio.get_event_loop().run_in_executor(
                 None, self.rotation_stage.return_to_origin
             )
@@ -426,19 +478,31 @@ class HoribaController:
     # ── Thorlabs rotation stage ───────────────────────────────────────
 
     async def set_thorlabs_angle(self, value: float) -> None:
-        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+        if (
+            self.enable_thorlabs_stage
+            and self.thorlabs_stage
+            and self.thorlabs_stage.is_connected
+        ):
             await asyncio.get_event_loop().run_in_executor(
-                None, lambda: setattr(self.thorlabs_stage, 'degree', value)
+                None, lambda: setattr(self.thorlabs_stage, "degree", value)
             )
             self.last_thorlabs_angle = self.thorlabs_stage.degree
 
     async def get_thorlabs_angle(self) -> float:
-        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+        if (
+            self.enable_thorlabs_stage
+            and self.thorlabs_stage
+            and self.thorlabs_stage.is_connected
+        ):
             return self.thorlabs_stage.degree
         return self.last_thorlabs_angle
 
     async def home_thorlabs_stage(self) -> None:
-        if self.enable_thorlabs_stage and self.thorlabs_stage and self.thorlabs_stage.is_connected:
+        if (
+            self.enable_thorlabs_stage
+            and self.thorlabs_stage
+            and self.thorlabs_stage.is_connected
+        ):
             await asyncio.get_event_loop().run_in_executor(
                 None, self.thorlabs_stage.home
             )
@@ -454,7 +518,7 @@ class HoribaController:
         async with self._lock():
             await self.mono.move_to_target_wavelength(wavelength)
             await self._wait_for_mono(self.mono)
-            self._current_params['wavelength'] = wavelength
+            self._current_params["wavelength"] = wavelength
 
     async def calibrate_wavelength(self, wavelength: float) -> None:
         async with self._lock():
@@ -462,7 +526,7 @@ class HoribaController:
             # Calibration shifts the reported-wavelength frame without
             # moving the grating. Invalidate the cached wavelength so
             # the next scan re-issues a move against the new frame.
-            self._current_params['wavelength'] = None
+            self._current_params["wavelength"] = None
 
     # ── CCD temperature ───────────────────────────────────────────────
 

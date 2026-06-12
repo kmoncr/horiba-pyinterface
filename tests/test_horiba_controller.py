@@ -11,7 +11,69 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# ── grating calibration offset reapply on connect ─────────────────────
+
+
+def test_connect_reapplies_offset_after_fresh_home(
+    mock_horiba_sdk, controller, monkeypatch
+):
+    """After a fresh mono_init, the saved offset is added to the home-frame
+    wavelength via mono_setPosition (home 500.0 + 0.3 -> 500.3)."""
+    from unittest.mock import AsyncMock
+    import grating_calib
+
+    mono = mock_horiba_sdk.mono
+    mono.is_initialized = AsyncMock(return_value=False)  # force homing
+    mono.get_current_wavelength = AsyncMock(return_value=500.0)
+    mono.calibrate_wavelength = AsyncMock()
+    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: 0.3)
+
+    _run(controller.connect_hardware())
+
+    mono.calibrate_wavelength.assert_awaited_once()
+    (applied,) = mono.calibrate_wavelength.await_args.args
+    assert abs(applied - 500.3) < 1e-9
+
+
+def test_connect_skips_reapply_when_already_initialized(
+    mock_horiba_sdk, controller, monkeypatch
+):
+    """If homing was skipped, the SDK still holds the prior offset; reapplying
+    would double it, so calibrate_wavelength must NOT be called."""
+    from unittest.mock import AsyncMock
+    import grating_calib
+
+    mono = mock_horiba_sdk.mono
+    mono.is_initialized = AsyncMock(return_value=True)  # skip homing
+    mono.get_current_wavelength = AsyncMock(return_value=500.0)
+    mono.calibrate_wavelength = AsyncMock()
+    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: 0.3)
+
+    _run(controller.connect_hardware())
+
+    mono.calibrate_wavelength.assert_not_awaited()
+
+
+def test_connect_no_reapply_without_saved_offset(
+    mock_horiba_sdk, controller, monkeypatch
+):
+    """Fresh home but no saved offset -> nothing is applied."""
+    from unittest.mock import AsyncMock
+    import grating_calib
+
+    mono = mock_horiba_sdk.mono
+    mono.is_initialized = AsyncMock(return_value=False)
+    mono.get_current_wavelength = AsyncMock(return_value=500.0)
+    mono.calibrate_wavelength = AsyncMock()
+    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: None)
+
+    _run(controller.connect_hardware())
+
+    mono.calibrate_wavelength.assert_not_awaited()
+
+
 # ── _sdk_lock serialization (commit 3) ────────────────────────────────
+
 
 def test_sdk_lock_serializes_overlapping_acquires(mock_horiba_sdk, controller):
     """Two concurrent acquire_spectrum calls must not interleave their
@@ -52,17 +114,19 @@ def test_sdk_lock_serializes_overlapping_acquires(mock_horiba_sdk, controller):
 
 # ── acquisition_abort wrapper (commit 3) ──────────────────────────────
 
+
 def test_acquisition_abort_calls_ccd_and_waits_for_idle(mock_horiba_sdk, controller):
     """acquisition_abort must call ccd.acquisition_abort and then poll
     get_acquisition_busy until it goes False before returning.
     """
+
     async def main():
         # connect_hardware itself polls get_acquisition_busy via
         # _wait_for_ccd, so install the side_effect AFTER connect.
         await controller.connect_hardware()
         busy_returns = [True, True, False]
-        mock_horiba_sdk.ccd.get_acquisition_busy.side_effect = (
-            lambda: busy_returns.pop(0)
+        mock_horiba_sdk.ccd.get_acquisition_busy.side_effect = lambda: busy_returns.pop(
+            0
         )
         await controller.acquisition_abort()
         return busy_returns
@@ -87,6 +151,7 @@ def test_acquisition_abort_noop_when_disconnected(mock_horiba_sdk, controller):
 
 
 # ── re-raise on acquire failure (commit 4) ────────────────────────────
+
 
 def test_acquire_spectrum_reraises_on_ccd_error(mock_horiba_sdk, controller):
     """Errors inside acquire_spectrum must propagate — silently
@@ -132,6 +197,7 @@ def test_acquire_spectrum_clears_acquiring_flag_on_error(mock_horiba_sdk, contro
 
 # ── acquire_image (commit 5) ──────────────────────────────────────────
 
+
 def _image_payload(y_size: int, x_size: int):
     """ICL acquisition payload for an image: yData is a 1-D row-major
     list of length y_size*x_size."""
@@ -146,8 +212,8 @@ def test_acquire_image_full_chip_returns_2d(mock_horiba_sdk, controller):
 
     cfg = {"chipWidth": 1024, "chipHeight": 256}
     mock_horiba_sdk.ccd.get_configuration.return_value = cfg
-    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = (
-        lambda: _image_payload(cfg["chipHeight"], cfg["chipWidth"])
+    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = lambda: _image_payload(
+        cfg["chipHeight"], cfg["chipWidth"]
     )
 
     async def main():
@@ -164,10 +230,11 @@ def test_acquire_image_custom_roi_shape(mock_horiba_sdk, controller):
     import numpy as np
 
     mock_horiba_sdk.ccd.get_configuration.return_value = {
-        "chipWidth": 1024, "chipHeight": 256
+        "chipWidth": 1024,
+        "chipHeight": 256,
     }
-    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = (
-        lambda: _image_payload(64, 128)
+    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = lambda: _image_payload(
+        64, 128
     )
 
     async def main():
@@ -186,11 +253,10 @@ def test_acquire_image_uses_image_format(mock_horiba_sdk, controller):
     from horiba_sdk.core.acquisition_format import AcquisitionFormat
 
     mock_horiba_sdk.ccd.get_configuration.return_value = {
-        "chipWidth": 4, "chipHeight": 2
+        "chipWidth": 4,
+        "chipHeight": 2,
     }
-    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = (
-        lambda: _image_payload(2, 4)
-    )
+    mock_horiba_sdk.ccd.get_acquisition_data.side_effect = lambda: _image_payload(2, 4)
 
     async def main():
         await controller.connect_hardware()
@@ -204,6 +270,7 @@ def test_acquire_image_uses_image_format(mock_horiba_sdk, controller):
 
 
 # ── Stage handling across the spectrometer-only shutdown (commit 8b) ──
+
 
 def test_shutdown_spectrometer_does_not_disconnect_stages(mock_horiba_sdk, monkeypatch):
     """A spectrometer-only shutdown must leave the rotation stages
@@ -295,10 +362,12 @@ def test_connect_hardware_reconnects_disconnected_stage(mock_horiba_sdk, monkeyp
     # Bring spectrometer up. connect_hardware must drive the stage
     # back up and refresh last_angle.
     fake_stage_instance.reconnect = MagicMock(return_value=True)
+
     # When reconnect succeeds, the stage reports its current angle.
     def reconnect_side():
         fake_stage_instance.is_connected = True
         return True
+
     fake_stage_instance.reconnect.side_effect = reconnect_side
 
     async def main():
@@ -316,13 +385,15 @@ def test_acquire_image_does_not_mutate_payload(mock_horiba_sdk, controller):
     import numpy as np
 
     payload_holder = {}
+
     def _payload():
         flat = [1.0, 2.0, 3.0, 4.0]
         payload_holder["last"] = flat
         return [{"roi": [{"xData": [], "yData": flat}]}]
 
     mock_horiba_sdk.ccd.get_configuration.return_value = {
-        "chipWidth": 2, "chipHeight": 2
+        "chipWidth": 2,
+        "chipHeight": 2,
     }
     mock_horiba_sdk.ccd.get_acquisition_data.side_effect = _payload
 
