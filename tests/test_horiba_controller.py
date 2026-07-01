@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,65 +12,81 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ── grating calibration offset reapply on connect ─────────────────────
+# ── grating calibration is never touched on connect ───────────────────
 
 
-def test_connect_reapplies_offset_after_fresh_home(
-    mock_horiba_sdk, controller, monkeypatch
+@pytest.mark.parametrize("already_initialized", [False, True])
+def test_connect_never_calibrates_on_startup(
+    mock_horiba_sdk, controller, monkeypatch, already_initialized
 ):
-    """After a fresh mono_init, the saved offset is added to the home-frame
-    wavelength via mono_setPosition (home 500.0 + 0.3 -> 500.3)."""
+    """Basic acquisition must always work: connect_hardware must NEVER call
+    mono_setPosition (calibrate_wavelength), even with a saved offset and a
+    fresh home. Feeding a post-home read into mono_setPosition was what
+    misaligned the spectrometer on startup — reapply is now manual-only."""
     from unittest.mock import AsyncMock
     import grating_calib
 
     mono = mock_horiba_sdk.mono
-    mono.is_initialized = AsyncMock(return_value=False)  # force homing
+    mono.is_initialized = AsyncMock(return_value=already_initialized)
     mono.get_current_wavelength = AsyncMock(return_value=500.0)
     mono.calibrate_wavelength = AsyncMock()
     monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: 0.3)
 
     _run(controller.connect_hardware())
+
+    mono.calibrate_wavelength.assert_not_awaited()
+
+
+# ── manual reapply (reapply_saved_calibration) ─────────────────────────
+
+
+def test_reapply_saved_calibration_returns_none_without_offset(
+    mock_horiba_sdk, controller, monkeypatch
+):
+    """With nothing saved, the manual reapply is a no-op returning None and
+    never touches the wavelength frame."""
+    import grating_calib
+
+    mono = mock_horiba_sdk.mono
+    mono.calibrate_wavelength = AsyncMock()
+    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: None)
+
+    async def main():
+        await controller.connect_hardware()
+        return await controller.reapply_saved_calibration()
+
+    result = _run(main())
+
+    assert result is None
+    mono.calibrate_wavelength.assert_not_awaited()
+
+
+def test_reapply_saved_calibration_applies_offset_once(
+    mock_horiba_sdk, controller, monkeypatch
+):
+    """Manual reapply shifts the current frame by the saved offset via a
+    single mono_setPosition (500.0 + 0.3 -> 500.3), invalidates the cached
+    wavelength, and returns the new value."""
+    import grating_calib
+
+    mono = mock_horiba_sdk.mono
+    mono.get_current_wavelength = AsyncMock(return_value=500.0)
+    mono.calibrate_wavelength = AsyncMock()
+    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: 0.3)
+
+    async def main():
+        await controller.connect_hardware()
+        controller._current_params["wavelength"] = 700.0  # stale cache
+        return await controller.reapply_saved_calibration()
+
+    result = _run(main())
 
     mono.calibrate_wavelength.assert_awaited_once()
     (applied,) = mono.calibrate_wavelength.await_args.args
     assert abs(applied - 500.3) < 1e-9
-
-
-def test_connect_skips_reapply_when_already_initialized(
-    mock_horiba_sdk, controller, monkeypatch
-):
-    """If homing was skipped, the SDK still holds the prior offset; reapplying
-    would double it, so calibrate_wavelength must NOT be called."""
-    from unittest.mock import AsyncMock
-    import grating_calib
-
-    mono = mock_horiba_sdk.mono
-    mono.is_initialized = AsyncMock(return_value=True)  # skip homing
-    mono.get_current_wavelength = AsyncMock(return_value=500.0)
-    mono.calibrate_wavelength = AsyncMock()
-    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: 0.3)
-
-    _run(controller.connect_hardware())
-
-    mono.calibrate_wavelength.assert_not_awaited()
-
-
-def test_connect_no_reapply_without_saved_offset(
-    mock_horiba_sdk, controller, monkeypatch
-):
-    """Fresh home but no saved offset -> nothing is applied."""
-    from unittest.mock import AsyncMock
-    import grating_calib
-
-    mono = mock_horiba_sdk.mono
-    mono.is_initialized = AsyncMock(return_value=False)
-    mono.get_current_wavelength = AsyncMock(return_value=500.0)
-    mono.calibrate_wavelength = AsyncMock()
-    monkeypatch.setattr(grating_calib, "load_saved_offset", lambda: None)
-
-    _run(controller.connect_hardware())
-
-    mono.calibrate_wavelength.assert_not_awaited()
+    assert abs(result - 500.3) < 1e-9
+    # Cache invalidated so the next scan re-issues a move against the new frame.
+    assert controller._current_params["wavelength"] is None
 
 
 # ── _sdk_lock serialization (commit 3) ────────────────────────────────

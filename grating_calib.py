@@ -164,13 +164,24 @@ class GratingCalibrationWindow(QWidget):
         # The footer note now lives here as a tooltip to keep the window clean.
         self.saved_label.setToolTip(
             "Calibration is held by the SDK only and is wiped when the "
-            "monochromator is re-initialized. The saved value is "
-            "auto-reapplied on next connect."
+            "monochromator is re-initialized. It is NOT reapplied "
+            "automatically — click 'Reapply saved' after connecting to "
+            "restore it."
         )
+        self.reapply_button = QPushButton("Reapply saved")
+        self.reapply_button.setFixedWidth(110)
+        self.reapply_button.setToolTip(
+            "Restore your saved calibration on the freshly-homed grating. "
+            "Click once after connecting — applying more than once per home "
+            "doubles the offset. Calibration is NOT reapplied automatically "
+            "on startup, so basic acquisition always works out of the box."
+        )
+        self.reapply_button.clicked.connect(self.do_reapply)
         self.forget_button = QPushButton("Forget saved")
         self.forget_button.setFixedWidth(110)
         self.forget_button.clicked.connect(self.do_forget)
         persist_row.addWidget(self.saved_label, stretch=1)
+        persist_row.addWidget(self.reapply_button)
         persist_row.addWidget(self.forget_button)
         root.addLayout(persist_row)
         self._refresh_saved_label()
@@ -207,6 +218,8 @@ class GratingCalibrationWindow(QWidget):
         self._busy = busy
         for w in (self.move_button, self.apply_button, self.refresh_button):
             w.setEnabled(not busy)
+        # Reapply is only meaningful when idle AND something is saved.
+        self.reapply_button.setEnabled(not busy and load_saved_offset() is not None)
 
     # ── Refresh current wavelength ────────────────────────────────────
 
@@ -298,6 +311,31 @@ class GratingCalibrationWindow(QWidget):
         except Exception as e:
             self.op_finished.emit("calibrate", False, str(e))
 
+    # ── Reapply saved ─────────────────────────────────────────────────
+
+    def do_reapply(self):
+        if not self._can_dispatch():
+            return
+        saved = load_saved_offset()
+        if saved is None:
+            return
+        logger.info(f"Grating Calib: reapplying saved offset {saved:+.3f} nm")
+        self.status_label.setText(f"Reapplying saved offset {saved:+.3f} nm…")
+        self._set_busy(True)
+        fut = asyncio.run_coroutine_threadsafe(
+            self.controller.reapply_saved_calibration(), self.loop
+        )
+        fut.add_done_callback(self._reapply_cb)
+
+    def _reapply_cb(self, fut):
+        try:
+            nm = fut.result()
+            if nm is not None:
+                self.wavelength_read.emit(float(nm))
+            self.op_finished.emit("reapply", True, "")
+        except Exception as e:
+            self.op_finished.emit("reapply", False, str(e))
+
     # ── Forget saved ──────────────────────────────────────────────────
 
     def do_forget(self):
@@ -310,11 +348,14 @@ class GratingCalibrationWindow(QWidget):
         if saved is None:
             self.saved_label.setText("Saved calibration: none")
             self.forget_button.setEnabled(False)
+            self.reapply_button.setEnabled(False)
         else:
             self.saved_label.setText(
-                f"Saved offset: {saved:+.3f} nm (auto-applied on connect)"
+                f"Saved offset: {saved:+.3f} nm (click 'Reapply saved')"
             )
             self.forget_button.setEnabled(True)
+            # Only offer reapply while idle; _set_busy owns the busy case.
+            self.reapply_button.setEnabled(not self._busy)
 
     # ── Op completion ─────────────────────────────────────────────────
 
@@ -331,5 +372,9 @@ class GratingCalibrationWindow(QWidget):
             self.status_label.setText(f"Calibrated peak {message} nm ✓")
         elif op_name == "move":
             self.status_label.setText("Move complete ✓")
+        elif op_name == "reapply":
+            self._refresh_saved_label()
+            logger.success("Grating Calib: reapplied saved calibration")
+            self.status_label.setText("Saved calibration reapplied ✓")
         else:  # refresh
             self.status_label.setText("Ready")

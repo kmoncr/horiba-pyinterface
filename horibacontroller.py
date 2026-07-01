@@ -180,37 +180,20 @@ class HoribaController:
             await self.ccd.open()
             await self._wait_for_ccd(self.ccd)
 
-            did_init = False
             if not await self.mono.is_initialized():
                 await self.mono.initialize()
                 await self._wait_for_mono(self.mono)
-                did_init = True
 
             self.is_connected = True
             logger.success("spectrometer initialisation complete")
 
-            # Re-apply the persisted grating-zero calibration offset, but ONLY
-            # after a fresh mono_init: homing is what wipes the SDK's
-            # mono_setPosition frame. If homing was skipped (ICL already
-            # initialised) the SDK still holds the prior offset, so reapplying
-            # would double it. The saved value is a frame offset (nm), not an
-            # absolute anchor, so shift whatever wavelength the grating homed
-            # to by that offset. We're inside self._lock(), so call self.mono
-            # directly rather than the lock-acquiring wrappers.
-            if did_init:
-                try:
-                    from grating_calib import load_saved_offset
-
-                    offset = load_saved_offset()
-                    if offset:
-                        p = float(await self.mono.get_current_wavelength())
-                        await self.mono.calibrate_wavelength(p + offset)
-                        logger.info(
-                            f"reapplied grating calibration offset {offset:+.3f} nm "
-                            f"(home {p:.3f} -> {p + offset:.3f} nm)"
-                        )
-                except Exception as e:
-                    logger.warning(f"failed to reapply saved calibration: {e}")
+            # NOTE: a saved grating-zero calibration is deliberately NOT
+            # reapplied here. Feeding a fragile post-home wavelength read into
+            # mono_setPosition during the most delicate moment of startup
+            # corrupted the wavelength frame and left basic acquisition broken
+            # until a power cycle. Calibration reapply is now an explicit,
+            # user-initiated action — see reapply_saved_calibration() and the
+            # "Reapply saved" button in the Grating Calibration window.
 
     async def acquire_spectrum(self, **kwargs) -> tuple[Any, Any]:
         if not self.is_connected:
@@ -527,6 +510,38 @@ class HoribaController:
             # moving the grating. Invalidate the cached wavelength so
             # the next scan re-issues a move against the new frame.
             self._current_params["wavelength"] = None
+
+    async def reapply_saved_calibration(self) -> float | None:
+        """Shift the current wavelength frame by the persisted calibration
+        offset, restoring a saved grating-zero calibration.
+
+        This is the manual, user-initiated replacement for the old
+        force-on-connect behaviour. Call it once after connecting/homing:
+        it reads whatever wavelength the grating currently reports and
+        applies ``mono_setPosition`` at that value plus the saved offset,
+        so the correction is valid wherever the grating homed to. The read
+        and the set happen atomically under the SDK lock.
+
+        Returns the new reported wavelength, or ``None`` if nothing is saved.
+        Applying more than once per home doubles the offset.
+        """
+        from grating_calib import load_saved_offset
+
+        offset = load_saved_offset()
+        if not offset:
+            return None
+        async with self._lock():
+            p = float(await self.mono.get_current_wavelength())
+            target = p + offset
+            await self.mono.calibrate_wavelength(target)
+            # Invalidate the cached wavelength so the next scan re-issues a
+            # move against the shifted frame.
+            self._current_params["wavelength"] = None
+            logger.info(
+                f"reapplied grating calibration offset {offset:+.3f} nm "
+                f"({p:.3f} -> {target:.3f} nm)"
+            )
+            return target
 
     # ── CCD temperature ───────────────────────────────────────────────
 
