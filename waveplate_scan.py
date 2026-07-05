@@ -54,43 +54,67 @@ def read_power(pm: ThorlabsPM100, navg: int) -> float:
     return float(np.mean(vals))
 
 
-def fit_harmonic(angles_deg: np.ndarray, power: np.ndarray, k: int):
-    """Linear least-squares fit of  P = D + a*cos(k*theta) + b*sin(k*theta).
+def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray):
+    """Fit power vs waveplate angle for a retarder between fixed polarizers.
 
-    Both waveplate models reduce to a single harmonic:
-      HWP:  A*cos^2(2*(t-t0)) + C  ->  k = 4  (90 deg period)
-      QWP:  A*cos^2(   (t-t0)) + C  ->  k = 2  (180 deg period)
+    For fixed linear input -> rotating retarder (fast axis at theta) -> fixed
+    polarizer, the transmitted power is
 
-    Returns dict with fit params, R^2, and the peak/min (fast/slow-axis) angles.
+        P(theta) = C + A*cos(4*(theta - theta0))              (90 deg period)
+
+    for ANY retardance: a HWP and a QWP give the SAME 4*theta functional form,
+    differing only in modulation amplitude (and full-depth when crossed). So the
+    curve cannot tell HWP from QWP -- it only locates the axis.
+
+    A small 2*theta term is also fit to capture peak-height asymmetry (slight
+    input ellipticity or laser drift over the scan); ideally it is ~zero.
+
+        P(theta) = C + A4*cos(4*(theta - t4)) + A2*cos(2*(theta - t2))
+
+    Returns a dict with the fit params, R^2, the extremum (axis) angles of the
+    4*theta term, and the measured modulation visibility.
     """
     t = np.deg2rad(angles_deg)
-    M = np.column_stack([np.ones_like(t), np.cos(k * t), np.sin(k * t)])
+    M = np.column_stack(
+        [
+            np.ones_like(t),
+            np.cos(4 * t),
+            np.sin(4 * t),
+            np.cos(2 * t),
+            np.sin(2 * t),
+        ]
+    )
     coeffs, *_ = np.linalg.lstsq(M, power, rcond=None)
-    D, a, b = coeffs
+    C, a4, b4, a2, b2 = coeffs
     model = M @ coeffs
 
     ss_res = np.sum((power - model) ** 2)
     ss_tot = np.sum((power - power.mean()) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    period = 360.0 / k
-    # Modulation peaks where k*theta == phase.
-    phase = np.arctan2(b, a)  # radians
-    peak = (np.rad2deg(phase) / k) % period
-    trough = (peak + period / 2.0) % period
-    amplitude = np.hypot(a, b)  # half peak-to-peak of the modulation
+    # 4*theta term: peak where 4*theta == phase.
+    amp4 = np.hypot(a4, b4)
+    peak = (np.rad2deg(np.arctan2(b4, a4)) / 4.0) % 90.0
+    trough = (peak + 45.0) % 90.0
+
+    # 2*theta term amplitude, as a diagnostic of asymmetry.
+    amp2 = np.hypot(a2, b2)
+
+    pmax, pmin = float(power.max()), float(power.min())
+    visibility = (pmax - pmin) / (pmax + pmin) if (pmax + pmin) > 0 else 0.0
 
     return {
-        "k": k,
-        "D": D,
-        "a": a,
-        "b": b,
-        "amplitude": amplitude,
-        "offset": D,
-        "period": period,
+        "C": C,
+        "a4": a4,
+        "b4": b4,
+        "a2": a2,
+        "b2": b2,
+        "amp4": amp4,
+        "amp2": amp2,
         "r2": r2,
         "peak_angle": peak,
         "trough_angle": trough,
+        "visibility": visibility,
     }
 
 
@@ -181,43 +205,46 @@ def main():
         w.writerows(zip(measured_angles, powers))
     print(f"\nsaved {len(powers)} points to {out_path}")
 
-    # --- fit both models ---
+    # --- fit ---
     ang = np.asarray(measured_angles)
     pw = np.asarray(powers)
-    hwp = fit_harmonic(ang, pw, k=4)
-    qwp = fit_harmonic(ang, pw, k=2)
+    fit = fit_waveplate(ang, pw)
 
-    print("\nfit results (P = offset + modulation):")
-    for name, fit in (("HWP (90 deg period)", hwp), ("QWP (180 deg period)", qwp)):
-        print(
-            f"  {name}: R^2 = {fit['r2']:.4f}, "
-            f"amplitude = {fit['amplitude']:.4e} W, offset = {fit['offset']:.4e} W"
-        )
-
-    best_name, best = max((("HWP", hwp), ("QWP", qwp)), key=lambda nf: nf[1]["r2"])
-    print(f"\nbest fit: {best_name}  (R^2 = {best['r2']:.4f})")
     print(
-        f"  max transmission (waveplate axis || polarizer) at "
-        f"{best['peak_angle']:.2f} deg  (mod {best['period']:.0f} deg)"
+        f"\nfit: P = C + A4*cos(4(theta - t0)) + A2*cos(2(...))   R^2 = {fit['r2']:.4f}"
+    )
+    print(f"  4-theta (90 deg period) amplitude A4 = {fit['amp4']:.4e} W")
+    print(
+        f"  2-theta asymmetry term    amplitude A2 = {fit['amp2']:.4e} W "
+        f"(A2/A4 = {fit['amp2'] / fit['amp4']:.2%} -- large => input ellipticity or drift)"
+    )
+    print(f"  modulation visibility = {fit['visibility']:.3f}  (1.0 = dips to zero)")
+    print(
+        f"\n  max transmission (waveplate axis || polarizer) at "
+        f"{fit['peak_angle']:.2f} deg  (mod 90 deg)"
     )
     print(
-        f"  min transmission (crossed) at "
-        f"{best['trough_angle']:.2f} deg  (mod {best['period']:.0f} deg)"
+        f"  min transmission (crossed)                    at "
+        f"{fit['trough_angle']:.2f} deg  (mod 90 deg)"
     )
     print(
-        "  -> fast axis lies along one of these extrema; which is fast vs slow "
-        "depends on the input polarization orientation."
+        "\n  NOTE: a HWP and a QWP both give this same 90-deg-period cos(4*theta)\n"
+        "  curve between fixed polarizers -- this scan locates the axis but does\n"
+        "  NOT identify the plate type. The fast axis is one of the extrema above;\n"
+        "  which extremum is fast vs slow depends on the input polarization."
     )
 
-    # overlay best fit on the live plot
+    # overlay fit on the live plot
     fine = np.linspace(ang.min(), ang.max(), 500)
     t = np.deg2rad(fine)
     model = (
-        best["D"]
-        + best["a"] * np.cos(best["k"] * t)
-        + best["b"] * np.sin(best["k"] * t)
+        fit["C"]
+        + fit["a4"] * np.cos(4 * t)
+        + fit["b4"] * np.sin(4 * t)
+        + fit["a2"] * np.cos(2 * t)
+        + fit["b2"] * np.sin(2 * t)
     )
-    ax.plot(fine, model, "-", lw=1.5, label=f"{best_name} fit")
+    ax.plot(fine, model, "-", lw=1.5, label="fit")
     ax.legend()
     fig.canvas.draw_idle()
 
