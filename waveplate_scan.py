@@ -256,10 +256,6 @@ def main():
         print(
             f"\n  WARNING: {fit['n_clipped']}/{fit['n_total']} points sit at the "
             f"floor ({fit['floor']:.3e} W) and were excluded from the fit.\n"
-            "  The minima are clip-limited (transmission fell below the meter's\n"
-            "  range/noise floor near extinction); the true minimum is BELOW this\n"
-            "  floor, so the fitted trough may go negative. To measure the real\n"
-            "  extinction, raise the PM100A sensitivity / use auto-range and re-scan."
         )
 
     print(
@@ -269,12 +265,6 @@ def main():
     print(
         f"  min transmission (crossed)                    at "
         f"{fit['trough_angle']:.2f} deg  (mod 90 deg)"
-    )
-    print(
-        "\n  NOTE: a HWP and a QWP both give this same 90-deg-period cos(4*theta)\n"
-        "  curve between fixed polarizers -- this scan locates the axis but does\n"
-        "  NOT identify the plate type. The fast axis is one of the extrema above;\n"
-        "  which extremum is fast vs slow depends on the input polarization."
     )
 
     # overlay fit on the live plot, clipped at the floor so it hugs the flat
@@ -289,7 +279,7 @@ def main():
         + fit["b2"] * np.sin(2 * t)
     )
     model_clipped = np.maximum(fit["floor"], model)
-    ax.plot(fine, model_clipped, "-", lw=1.5, label="fit (clipped at floor)")
+    ax.plot(fine, model_clipped, "-", lw=1.5, label="fit")
     ax.legend()
     fig.canvas.draw_idle()
 
