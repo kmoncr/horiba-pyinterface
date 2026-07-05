@@ -54,7 +54,7 @@ def read_power(pm: ThorlabsPM100, navg: int) -> float:
     return float(np.mean(vals))
 
 
-def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray):
+def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray, clip_frac: float = 0.05):
     """Fit power vs waveplate angle for a retarder between fixed polarizers.
 
     For fixed linear input -> rotating retarder (fast axis at theta) -> fixed
@@ -71,25 +71,55 @@ def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray):
 
         P(theta) = C + A4*cos(4*(theta - t4)) + A2*cos(2*(theta - t2))
 
-    Returns a dict with the fit params, R^2, the extremum (axis) angles of the
-    4*theta term, and the measured modulation visibility.
+    Clip-aware: near extinction (crossed) the transmitted power drops below the
+    meter's range/noise floor and reads a roughly constant small value, giving
+    flat-bottomed minima that no sinusoid can pass through -- an ordinary fit is
+    dragged negative at the troughs and underfits the peaks. We detect that floor
+    and EXCLUDE the floored points from the least-squares fit, so the harmonic is
+    set by the (real) peaks and shoulders. The true extinction lies below the
+    floor, so the fitted 4*theta trough may go negative -- that is expected and
+    reported, not an error.
+
+    clip_frac: points within clip_frac*(max-min) of the minimum are treated as
+    floored and excluded from the fit.
+
+    Returns a dict with the fit params, R^2 (over fitted points), the extremum
+    (axis) angles of the 4*theta term, the detected floor, and the modulation
+    visibility.
     """
     t = np.deg2rad(angles_deg)
-    M = np.column_stack(
-        [
-            np.ones_like(t),
-            np.cos(4 * t),
-            np.sin(4 * t),
-            np.cos(2 * t),
-            np.sin(2 * t),
-        ]
-    )
-    coeffs, *_ = np.linalg.lstsq(M, power, rcond=None)
-    C, a4, b4, a2, b2 = coeffs
-    model = M @ coeffs
+    pmax, pmin = float(power.max()), float(power.min())
+    prange = pmax - pmin
 
-    ss_res = np.sum((power - model) ** 2)
-    ss_tot = np.sum((power - power.mean()) ** 2)
+    # Flag floored (clipped) points near the minimum and exclude them from the fit.
+    floor = pmin
+    clipped = (
+        power <= pmin + clip_frac * prange if prange > 0 else np.zeros_like(power, bool)
+    )
+    keep = ~clipped
+    # Guard: a harmonic fit needs enough non-clipped points; else fit everything.
+    if keep.sum() < 6:
+        keep = np.ones_like(power, bool)
+        clipped = ~keep
+
+    def design(tt):
+        return np.column_stack(
+            [
+                np.ones_like(tt),
+                np.cos(4 * tt),
+                np.sin(4 * tt),
+                np.cos(2 * tt),
+                np.sin(2 * tt),
+            ]
+        )
+
+    coeffs, *_ = np.linalg.lstsq(design(t[keep]), power[keep], rcond=None)
+    C, a4, b4, a2, b2 = coeffs
+
+    # R^2 evaluated over the fitted (non-clipped) points only.
+    model_keep = design(t[keep]) @ coeffs
+    ss_res = np.sum((power[keep] - model_keep) ** 2)
+    ss_tot = np.sum((power[keep] - power[keep].mean()) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     # 4*theta term: peak where 4*theta == phase.
@@ -100,7 +130,6 @@ def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray):
     # 2*theta term amplitude, as a diagnostic of asymmetry.
     amp2 = np.hypot(a2, b2)
 
-    pmax, pmin = float(power.max()), float(power.min())
     visibility = (pmax - pmin) / (pmax + pmin) if (pmax + pmin) > 0 else 0.0
 
     return {
@@ -115,6 +144,9 @@ def fit_waveplate(angles_deg: np.ndarray, power: np.ndarray):
         "peak_angle": peak,
         "trough_angle": trough,
         "visibility": visibility,
+        "floor": floor,
+        "n_clipped": int(clipped.sum()),
+        "n_total": int(power.size),
     }
 
 
@@ -219,6 +251,17 @@ def main():
         f"(A2/A4 = {fit['amp2'] / fit['amp4']:.2%} -- large => input ellipticity or drift)"
     )
     print(f"  modulation visibility = {fit['visibility']:.3f}  (1.0 = dips to zero)")
+
+    if fit["n_clipped"] > 0:
+        print(
+            f"\n  WARNING: {fit['n_clipped']}/{fit['n_total']} points sit at the "
+            f"floor ({fit['floor']:.3e} W) and were excluded from the fit.\n"
+            "  The minima are clip-limited (transmission fell below the meter's\n"
+            "  range/noise floor near extinction); the true minimum is BELOW this\n"
+            "  floor, so the fitted trough may go negative. To measure the real\n"
+            "  extinction, raise the PM100A sensitivity / use auto-range and re-scan."
+        )
+
     print(
         f"\n  max transmission (waveplate axis || polarizer) at "
         f"{fit['peak_angle']:.2f} deg  (mod 90 deg)"
@@ -234,7 +277,8 @@ def main():
         "  which extremum is fast vs slow depends on the input polarization."
     )
 
-    # overlay fit on the live plot
+    # overlay fit on the live plot, clipped at the floor so it hugs the flat
+    # bottoms instead of diving negative through the clip-limited minima.
     fine = np.linspace(ang.min(), ang.max(), 500)
     t = np.deg2rad(fine)
     model = (
@@ -244,7 +288,8 @@ def main():
         + fit["a2"] * np.cos(2 * t)
         + fit["b2"] * np.sin(2 * t)
     )
-    ax.plot(fine, model, "-", lw=1.5, label="fit")
+    model_clipped = np.maximum(fit["floor"], model)
+    ax.plot(fine, model_clipped, "-", lw=1.5, label="fit (clipped at floor)")
     ax.legend()
     fig.canvas.draw_idle()
 
