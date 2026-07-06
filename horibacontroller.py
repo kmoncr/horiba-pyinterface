@@ -423,18 +423,37 @@ class HoribaController:
 
     # ── OptoSigma rotation stage ──────────────────────────────────────
 
+    @staticmethod
+    def _angle_off(actual: float, target: float) -> float:
+        """Smallest angular difference (deg), accounting for 360° wraparound."""
+        return abs(((actual - target + 180.0) % 360.0) - 180.0)
+
     async def set_rotation_angle(self, value: float) -> None:
-        if (
+        if not (
             self.enable_rotation_stage
             and self.rotation_stage
             and self.rotation_stage.is_connected
         ):
-            # Run the blocking serial move in a thread so the event loop
-            # stays responsive for temperature polls and GUI updates.
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: setattr(self.rotation_stage, "degree", value)
+            return
+        # Skip a redundant re-move when already at the commanded angle (e.g.
+        # repeated scans at one configuration) — mirrors acquire_spectrum's guard.
+        if abs(self.last_angle - value) <= 0.01:
+            return
+        loop = asyncio.get_event_loop()
+        # Run the blocking serial move in a thread so the event loop stays
+        # responsive for temperature polls and GUI updates.
+        await loop.run_in_executor(
+            None, lambda: setattr(self.rotation_stage, "degree", value)
+        )
+        # The OptoSigma setter swallows serial errors, so confirm the stage
+        # actually arrived rather than trusting the commanded value; a failed
+        # move must raise so the scan aborts instead of acquiring off-angle.
+        actual = await loop.run_in_executor(None, lambda: self.rotation_stage.degree)
+        if self._angle_off(actual, value) > 0.1:
+            raise RuntimeError(
+                f"OptoSigma failed to reach {value:.3f}° (stopped at {actual:.3f}°)"
             )
-            self.last_angle = value
+        self.last_angle = value
 
     async def get_rotation_angle(self) -> float:
         if (
@@ -461,15 +480,29 @@ class HoribaController:
     # ── Thorlabs rotation stage ───────────────────────────────────────
 
     async def set_thorlabs_angle(self, value: float) -> None:
-        if (
+        if not (
             self.enable_thorlabs_stage
             and self.thorlabs_stage
             and self.thorlabs_stage.is_connected
         ):
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: setattr(self.thorlabs_stage, "degree", value)
+            return
+        # Skip a redundant re-move when already at the commanded angle.
+        if abs(self.last_thorlabs_angle - value) <= 0.001:
+            return
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, lambda: setattr(self.thorlabs_stage, "degree", value)
+        )
+        # MoveTo has a fixed 60 s timeout and can return before the move ends;
+        # wait for motion to actually stop, then confirm the final position so a
+        # timed-out/failed move aborts the scan instead of acquiring mid-move.
+        await loop.run_in_executor(None, self.thorlabs_stage.wait_until_ready)
+        actual = await loop.run_in_executor(None, lambda: self.thorlabs_stage.degree)
+        if self._angle_off(actual, value % 360.0) > 0.1:
+            raise RuntimeError(
+                f"Thorlabs failed to reach {value:.3f}° (stopped at {actual:.3f}°)"
             )
-            self.last_thorlabs_angle = self.thorlabs_stage.degree
+        self.last_thorlabs_angle = value
 
     async def get_thorlabs_angle(self) -> float:
         if (

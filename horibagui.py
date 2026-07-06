@@ -8,12 +8,30 @@ from loguru import logger
 
 from pymeasure.display.Qt import QtWidgets
 from PyQt5.QtWidgets import (
-    QLabel, QHBoxLayout, QGroupBox, QComboBox,
-    QPushButton, QVBoxLayout, QDoubleSpinBox, QFormLayout,
-    QWidget, QFrame, QMessageBox, QTabWidget, QGridLayout,
-    QSizePolicy, QScrollArea, QSpinBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QRadioButton, QButtonGroup, QLineEdit, QSplitter,
+    QLabel,
+    QHBoxLayout,
+    QGroupBox,
+    QComboBox,
+    QPushButton,
+    QVBoxLayout,
+    QDoubleSpinBox,
+    QFormLayout,
+    QWidget,
+    QFrame,
+    QMessageBox,
+    QTabWidget,
+    QGridLayout,
+    QSizePolicy,
+    QScrollArea,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QRadioButton,
+    QButtonGroup,
+    QLineEdit,
+    QSplitter,
     QDialog,
 )
 from PyQt5.QtCore import pyqtSignal, QTimer, Qt, QSettings
@@ -32,9 +50,9 @@ def _make_settings(app: str) -> QSettings:
     redirect take effect on Windows; the (org, app)-only constructor
     falls through to NativeFormat (the registry).
     """
-    return QSettings(
-        QSettings.IniFormat, QSettings.UserScope, QSETTINGS_ORG, app
-    )
+    return QSettings(QSettings.IniFormat, QSettings.UserScope, QSETTINGS_ORG, app)
+
+
 from pymeasure.display.windows import ManagedWindow
 from horibaprocedure import HoribaSpectrumProcedure, GRATING_CHOICES
 from pymeasure.experiment import Results
@@ -44,6 +62,7 @@ try:
 except ImportError:
     logger.critical("failed to import horibacontroller")
     sys.exit(1)
+
 
 class CollapsibleSection(QWidget):
     def __init__(self, title="", parent=None, start_collapsed=False):
@@ -90,8 +109,14 @@ class CollapsibleSection(QWidget):
         widget.setVisible(True)
         self._content_container.setVisible(not self._is_collapsed)
 
+
 class PopupSequencerButton(QWidget):
-    def __init__(self, content_widget: QWidget, title: str = "Dual-Stage Synchronized Sequence", parent=None):
+    def __init__(
+        self,
+        content_widget: QWidget,
+        title: str = "Dual-Stage Synchronized Sequence",
+        parent=None,
+    ):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -126,10 +151,12 @@ class PopupSequencerButton(QWidget):
         popup.setObjectName("seqPopupRoot")
 
         original_hide_event = popup.hideEvent
+
         def hide_event(ev):
             self._last_hide = time.monotonic()
             self._refresh_label(is_open=False)
             original_hide_event(ev)
+
         popup.hideEvent = hide_event
 
         popup_layout = QVBoxLayout(popup)
@@ -143,7 +170,7 @@ class PopupSequencerButton(QWidget):
             self._popup.hide()
             self._refresh_label(is_open=False)
             return
-        
+
         if time.monotonic() - self._last_hide < 0.15:
             return
 
@@ -163,7 +190,6 @@ class PopupSequencerButton(QWidget):
 
 
 class StageSequenceEditor(QWidget):
-
     sequence_changed = pyqtSignal()
 
     def __init__(self, label: str, default_step: float = 10.0, parent=None):
@@ -174,7 +200,7 @@ class StageSequenceEditor(QWidget):
 
         # Mode toggle
         mode_row = QHBoxLayout()
-        self._sweep_radio  = QRadioButton("Sweep")
+        self._sweep_radio = QRadioButton("Sweep")
         self._manual_radio = QRadioButton("Manual")
         self._sweep_radio.setChecked(True)
         mode_group = QButtonGroup(self)
@@ -192,21 +218,24 @@ class StageSequenceEditor(QWidget):
         sweep_form.setSpacing(3)
 
         self._start_spin = QDoubleSpinBox()
-        self._start_spin.setRange(-720, 720); self._start_spin.setDecimals(3)
+        self._start_spin.setRange(-720, 720)
+        self._start_spin.setDecimals(3)
         self._start_spin.setValue(0.0)
-        self._stop_spin  = QDoubleSpinBox()
-        self._stop_spin.setRange(-720, 720);  self._stop_spin.setDecimals(3)
+        self._stop_spin = QDoubleSpinBox()
+        self._stop_spin.setRange(-720, 720)
+        self._stop_spin.setDecimals(3)
         self._stop_spin.setValue(90.0)
-        self._step_spin  = QDoubleSpinBox()
-        self._step_spin.setRange(0.001, 720); self._step_spin.setDecimals(3)
+        self._step_spin = QDoubleSpinBox()
+        self._step_spin.setRange(0.001, 720)
+        self._step_spin.setDecimals(3)
         self._step_spin.setValue(default_step)
 
         for spin in (self._start_spin, self._stop_spin, self._step_spin):
             spin.valueChanged.connect(self.sequence_changed)
 
         sweep_form.addRow("Start (°):", self._start_spin)
-        sweep_form.addRow("Stop (°):",  self._stop_spin)
-        sweep_form.addRow("Step (°):",  self._step_spin)
+        sweep_form.addRow("Stop (°):", self._stop_spin)
+        sweep_form.addRow("Step (°):", self._step_spin)
         layout.addWidget(self._sweep_widget)
 
         self._manual_widget = QWidget()
@@ -230,8 +259,8 @@ class StageSequenceEditor(QWidget):
     def angles(self) -> list[float]:
         if self._sweep_radio.isChecked():
             start = self._start_spin.value()
-            stop  = self._stop_spin.value()
-            step  = self._step_spin.value()
+            stop = self._stop_spin.value()
+            step = self._step_spin.value()
             if step <= 0:
                 return []
             result = []
@@ -260,8 +289,7 @@ class StageSequenceEditor(QWidget):
 
 
 class DualStageSequencer(QWidget):
-
-    run_requested = pyqtSignal(list)   # emits list of (opto_angle, tl_angle) tuples
+    run_requested = pyqtSignal(list)  # emits list of (opto_angle, tl_angle) tuples
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -272,13 +300,13 @@ class DualStageSequencer(QWidget):
         editors_row = QHBoxLayout()
 
         opto_group = QGroupBox("OptoSigma Angles")
-        opto_vbox  = QVBoxLayout(opto_group)
+        opto_vbox = QVBoxLayout(opto_group)
         self._opto_editor = StageSequenceEditor("OptoSigma", default_step=10.0)
         self._opto_editor.sequence_changed.connect(self._refresh_preview)
         opto_vbox.addWidget(self._opto_editor)
 
-        tl_group  = QGroupBox("Thorlabs Angles")
-        tl_vbox   = QVBoxLayout(tl_group)
+        tl_group = QGroupBox("Thorlabs Angles")
+        tl_vbox = QVBoxLayout(tl_group)
         self._tl_editor = StageSequenceEditor("Thorlabs", default_step=10.0)
         self._tl_editor.sequence_changed.connect(self._refresh_preview)
         tl_vbox.addWidget(self._tl_editor)
@@ -290,8 +318,7 @@ class DualStageSequencer(QWidget):
         pair_row = QHBoxLayout()
         pair_row.addWidget(QLabel("Pair mode:"))
         self._pair_combo = QComboBox()
-        self._pair_combo.addItems(["Simultaneous",
-                                   "OptoSigma only", "Thorlabs only"])
+        self._pair_combo.addItems(["Simultaneous", "OptoSigma only", "Thorlabs only"])
         self._pair_combo.currentIndexChanged.connect(self._refresh_preview)
         pair_row.addWidget(self._pair_combo)
 
@@ -334,19 +361,18 @@ class DualStageSequencer(QWidget):
 
         self._refresh_preview()
 
-
     def _build_steps(self) -> list[tuple[float, float]]:
         """Return the list of (opto_angle, tl_angle) step pairs."""
         opto_angles = self._opto_editor.angles()
-        tl_angles   = self._tl_editor.angles()
+        tl_angles = self._tl_editor.angles()
         mode = self._pair_combo.currentIndex()
 
-        if mode == 0:   # Zip
+        if mode == 0:  # Zip
             return list(zip(opto_angles, tl_angles))
-        elif mode == 1: # OptoSigma only
+        elif mode == 1:  # OptoSigma only
             tl_fixed = tl_angles[0] if tl_angles else 0.0
             return [(o, tl_fixed) for o in opto_angles]
-        else:           # Thorlabs only
+        else:  # Thorlabs only
             opto_fixed = opto_angles[0] if opto_angles else 0.0
             return [(opto_fixed, t) for t in tl_angles]
 
@@ -374,6 +400,25 @@ class DualStageSequencer(QWidget):
         if not steps:
             QMessageBox.warning(self, "Dual Sequence", "No steps to run.")
             return
+        # In Simultaneous (zip) mode, unequal-length angle lists are silently
+        # truncated to the shorter one. Warn before running so steps don't
+        # vanish unnoticed.
+        if self._pair_combo.currentIndex() == 0:
+            n_opto = len(self._opto_editor.angles())
+            n_tl = len(self._tl_editor.angles())
+            if n_opto != n_tl:
+                resp = QMessageBox.warning(
+                    self,
+                    "Dual Sequence",
+                    f"Simultaneous mode pairs the two angle lists, but they "
+                    f"differ in length (OptoSigma: {n_opto}, Thorlabs: {n_tl}).\n\n"
+                    f"Only the first {min(n_opto, n_tl)} step(s) will run; the "
+                    f"extra angles are dropped.\n\nRun anyway?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                if resp != QMessageBox.Yes:
+                    return
         self.run_requested.emit(steps)
 
     def scans_per_step(self) -> int:
@@ -381,29 +426,40 @@ class DualStageSequencer(QWidget):
 
 
 class MainWindow(ManagedWindow):
-
-    temp_updated_signal         = pyqtSignal(float)
-    angle_updated_signal        = pyqtSignal(float)
+    temp_updated_signal = pyqtSignal(float)
+    angle_updated_signal = pyqtSignal(float)
     thorlabs_angle_updated_signal = pyqtSignal(float)
 
     def __init__(self):
         super().__init__(
             procedure_class=HoribaSpectrumProcedure,
             inputs=[
-                'excitation_wavelength', 'center_wavelength', 'exposure',
-                'slit_position', 'gain', 'speed',
-                'ccd_y_origin', 'ccd_y_size', 'ccd_x_bin',
+                "excitation_wavelength",
+                "center_wavelength",
+                "exposure",
+                "slit_position",
+                "gain",
+                "speed",
+                "ccd_y_origin",
+                "ccd_y_size",
+                "ccd_x_bin",
             ],
             displays=[
-                'excitation_wavelength', 'center_wavelength', 'exposure',
-                'slit_position', 'gain', 'speed',
-                'ccd_y_origin', 'ccd_y_size', 'ccd_x_bin',
+                "excitation_wavelength",
+                "center_wavelength",
+                "exposure",
+                "slit_position",
+                "gain",
+                "speed",
+                "ccd_y_origin",
+                "ccd_y_size",
+                "ccd_x_bin",
             ],
-            x_axis='Wavelength',
-            y_axis='Intensity',
+            x_axis="Wavelength",
+            y_axis="Intensity",
             sequencer=False,
         )
-        self.setWindowTitle('Horiba Spectrum Scan')
+        self.setWindowTitle("Horiba Spectrum Scan")
         self.setMinimumSize(1200, 800)
 
         # Connect cross-thread signals
@@ -421,8 +477,9 @@ class MainWindow(ManagedWindow):
             self.run_async_task(self.controller.connect_hardware())
         except Exception as e:
             logger.error(f"Hardware connection failed: {e}")
-            QMessageBox.critical(self, "Connection Error",
-                                 f"Failed to connect to hardware:\n{e}")
+            QMessageBox.critical(
+                self, "Connection Error", f"Failed to connect to hardware:\n{e}"
+            )
 
         row1 = QWidget()
         row1_layout = QHBoxLayout(row1)
@@ -434,7 +491,7 @@ class MainWindow(ManagedWindow):
         grating_layout.setContentsMargins(6, 6, 6, 6)
         self.grating_combo = QComboBox()
         self.grating_combo.addItems(GRATING_CHOICES.keys())
-        self.grating_combo.setCurrentText('Third (150 grooves/mm)')
+        self.grating_combo.setCurrentText("Third (150 grooves/mm)")
         self.grating_combo.currentTextChanged.connect(self.update_grating)
         grating_layout.addRow("Grating:", self.grating_combo)
         grating_widget.setLayout(grating_layout)
@@ -469,8 +526,8 @@ class MainWindow(ManagedWindow):
         self.refresh_angle_button.setFixedWidth(70)
         self.refresh_angle_button.clicked.connect(self.update_current_angle)
 
-        opto_layout.addWidget(self.current_angle_display,  0, 0, 1, 2)
-        opto_layout.addWidget(self.refresh_angle_button,   0, 2)
+        opto_layout.addWidget(self.current_angle_display, 0, 0, 1, 2)
+        opto_layout.addWidget(self.refresh_angle_button, 0, 2)
 
         self.set_angle_input = QDoubleSpinBox()
         self.set_angle_input.setRange(-360.0, 360.0)
@@ -480,9 +537,9 @@ class MainWindow(ManagedWindow):
         self.go_to_angle_button.setFixedWidth(50)
         self.go_to_angle_button.clicked.connect(self.do_go_to_angle)
 
-        opto_layout.addWidget(QLabel("Target (°):"),       1, 0)
-        opto_layout.addWidget(self.set_angle_input,        1, 1)
-        opto_layout.addWidget(self.go_to_angle_button,     1, 2)
+        opto_layout.addWidget(QLabel("Target (°):"), 1, 0)
+        opto_layout.addWidget(self.set_angle_input, 1, 1)
+        opto_layout.addWidget(self.go_to_angle_button, 1, 2)
 
         self.return_to_origin_button = QPushButton("Return to Origin (0°)")
         self.return_to_origin_button.clicked.connect(self.do_return_to_origin)
@@ -497,7 +554,7 @@ class MainWindow(ManagedWindow):
 
         self.thorlabs_status_label = QLabel("Status: initializing…")
         self.thorlabs_status_label.setStyleSheet("color: orange;")
-        tl_layout.addWidget(self.thorlabs_status_label,      0, 0, 1, 3)
+        tl_layout.addWidget(self.thorlabs_status_label, 0, 0, 1, 3)
 
         self.thorlabs_angle_display = QLabel("Current: --.-°")
         self.thorlabs_angle_display.setStyleSheet("font-weight: bold;")
@@ -505,8 +562,8 @@ class MainWindow(ManagedWindow):
         self.thorlabs_refresh_button.setFixedWidth(70)
         self.thorlabs_refresh_button.clicked.connect(self.update_thorlabs_angle)
 
-        tl_layout.addWidget(self.thorlabs_angle_display,     1, 0, 1, 2)
-        tl_layout.addWidget(self.thorlabs_refresh_button,    1, 2)
+        tl_layout.addWidget(self.thorlabs_angle_display, 1, 0, 1, 2)
+        tl_layout.addWidget(self.thorlabs_refresh_button, 1, 2)
 
         self.thorlabs_angle_input = QDoubleSpinBox()
         self.thorlabs_angle_input.setRange(0.0, 360.0)
@@ -516,22 +573,24 @@ class MainWindow(ManagedWindow):
         self.thorlabs_go_button.setFixedWidth(50)
         self.thorlabs_go_button.clicked.connect(self.do_thorlabs_go_to_angle)
 
-        tl_layout.addWidget(QLabel("Target (°):"),           2, 0)
-        tl_layout.addWidget(self.thorlabs_angle_input,       2, 1)
-        tl_layout.addWidget(self.thorlabs_go_button,         2, 2)
+        tl_layout.addWidget(QLabel("Target (°):"), 2, 0)
+        tl_layout.addWidget(self.thorlabs_angle_input, 2, 1)
+        tl_layout.addWidget(self.thorlabs_go_button, 2, 2)
 
         self.thorlabs_home_button = QPushButton("Home Stage")
         self.thorlabs_home_button.clicked.connect(self.do_thorlabs_home)
-        tl_layout.addWidget(self.thorlabs_home_button,        3, 0, 1, 3)
+        tl_layout.addWidget(self.thorlabs_home_button, 3, 0, 1, 3)
 
         tl_layout.setColumnStretch(1, 1)
 
         stage_tabs.addTab(opto_tab, "OptoSigma")
-        stage_tabs.addTab(tl_tab,   "Thorlabs K10CR2")
+        stage_tabs.addTab(tl_tab, "Thorlabs K10CR2")
         stages_outer.addWidget(stage_tabs)
 
-        if (self.controller.thorlabs_stage is not None
-                and self.controller.thorlabs_stage.is_connected):
+        if (
+            self.controller.thorlabs_stage is not None
+            and self.controller.thorlabs_stage.is_connected
+        ):
             self._thorlabs_connect_ok()
         elif self.controller.enable_thorlabs_stage:
             # Was enabled but failed to connect during init
@@ -546,7 +605,7 @@ class MainWindow(ManagedWindow):
         self.setup_tools_ui()
         self.inputs.layout().addWidget(self.tools_group)
 
-        self.file_input.extensions = ['csv']
+        self.file_input.extensions = ["csv"]
 
         # Restore last-used save directory if we have one. Pymeasure's
         # file_input has a writable .directory property; we set it
@@ -570,7 +629,7 @@ class MainWindow(ManagedWindow):
 
         self.update_current_angle()
 
-        self._temp_pending = False   # prevents stacking temp requests
+        self._temp_pending = False  # prevents stacking temp requests
         self.temp_timer = QTimer()
         self.temp_timer.timeout.connect(self.trigger_temperature_update)
         self.temp_timer.start(5000)
@@ -599,10 +658,12 @@ class MainWindow(ManagedWindow):
         tools_layout.setSpacing(8)
 
         self.temp_label = QLabel("CCD Temp: -- °C")
-        self.temp_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        self.temp_label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #333;"
+        )
         tools_layout.addWidget(self.temp_label, stretch=1)
 
-        self.btn_rtc   = QPushButton("RTC")
+        self.btn_rtc = QPushButton("RTC")
         self.btn_rtc.clicked.connect(self._open_rtc_window)
         self.btn_image = QPushButton("Image Scan")
         self.btn_image.clicked.connect(self._open_image_window)
@@ -630,12 +691,11 @@ class MainWindow(ManagedWindow):
         # Fallback: just add to inputs
         self.inputs.layout().addWidget(self._dual_seq_section)
 
-
     def trigger_temperature_update(self):
         if not self.controller or not self.controller.is_connected:
             self.temp_label.setText("CCD Temp: Disconnected")
             return
-        if hasattr(self, 'manager') and self.manager.is_running():
+        if hasattr(self, "manager") and self.manager.is_running():
             # Suspend rather than no-op: the queued scan and the temp
             # poll otherwise race for the single ICL websocket.
             self.temp_timer.stop()
@@ -675,7 +735,6 @@ class MainWindow(ManagedWindow):
                 f"CCD Temp: <font color='{color}'>{temp:.1f} °C</font>"
             )
 
-
     def update_current_angle(self):
         future = asyncio.run_coroutine_threadsafe(
             self.controller.get_rotation_angle(), self.loop
@@ -685,7 +744,7 @@ class MainWindow(ManagedWindow):
     def _handle_angle_result(self, fut):
         try:
             angle = fut.result()
-            logger.info(f"Fetched angle from hardware: {angle:.2f}°") 
+            logger.info(f"Fetched angle from hardware: {angle:.2f}°")
             self.angle_updated_signal.emit(angle)
         except Exception as e:
             logger.error(f"OptoSigma angle fetch error: {e}")
@@ -713,10 +772,20 @@ class MainWindow(ManagedWindow):
         future = asyncio.run_coroutine_threadsafe(_home_and_update(), self.loop)
         future.add_done_callback(self._handle_angle_result)
 
+    def _thorlabs_mark_connected(self):
+        """Set the status label to connected. Does NOT poll the angle.
 
-    def _thorlabs_connect_ok(self):
+        Kept separate from _thorlabs_connect_ok so the angle-result handler can
+        mark the stage alive without re-triggering update_thorlabs_angle — that
+        recursion was an unbounded poll loop that re-wrote thorlabs_angle_input
+        many times a second, so a typed target was stomped before you could hit
+        Go (the "input box doesn't work" bug).
+        """
         self.thorlabs_status_label.setText("Status: connected")
         self.thorlabs_status_label.setStyleSheet("color: green;")
+
+    def _thorlabs_connect_ok(self):
+        self._thorlabs_mark_connected()
         self.update_thorlabs_angle()
 
     def _thorlabs_show_disconnected(self):
@@ -741,8 +810,9 @@ class MainWindow(ManagedWindow):
         try:
             angle = fut.result()
             self.thorlabs_angle_updated_signal.emit(angle)
-            # If we got a valid angle back, the stage is alive
-            QTimer.singleShot(0, self._thorlabs_connect_ok)
+            # If we got a valid angle back, the stage is alive. Mark connected
+            # WITHOUT re-polling (calling _thorlabs_connect_ok here would loop).
+            QTimer.singleShot(0, self._thorlabs_mark_connected)
         except Exception as e:
             logger.error(f"Thorlabs angle fetch error: {e}")
             QTimer.singleShot(0, self._thorlabs_show_failed)
@@ -789,7 +859,9 @@ class MainWindow(ManagedWindow):
 
         if self._rtc_win is None:
             self._rtc_win = LiveViewWindow(
-                controller=self.controller, loop=self.loop, parent=self,
+                controller=self.controller,
+                loop=self.loop,
+                parent=self,
             )
             self._rtc_win.scanning_changed.connect(self._on_child_scanning_changed)
             # Forget the handle once the user actually closes it so a
@@ -806,9 +878,13 @@ class MainWindow(ManagedWindow):
 
         if self._image_win is None:
             self._image_win = ImageWindow(
-                controller=self.controller, loop=self.loop, parent=self,
+                controller=self.controller,
+                loop=self.loop,
+                parent=self,
             )
-            self._image_win.destroyed.connect(lambda *_: self._on_child_destroyed("image"))
+            self._image_win.destroyed.connect(
+                lambda *_: self._on_child_destroyed("image")
+            )
         self._image_win.show()
         self._image_win.raise_()
         self._image_win.activateWindow()
@@ -819,7 +895,9 @@ class MainWindow(ManagedWindow):
 
         if self._grating_calib_win is None:
             self._grating_calib_win = GratingCalibrationWindow(
-                controller=self.controller, loop=self.loop, parent=self,
+                controller=self.controller,
+                loop=self.loop,
+                parent=self,
             )
             self._grating_calib_win.destroyed.connect(
                 lambda *_: self._on_child_destroyed("grating_calib")
@@ -852,7 +930,6 @@ class MainWindow(ManagedWindow):
         else:
             self._resume_temp_poll()
 
-
     def _start_event_loop(self):
         def run_loop(loop):
             asyncio.set_event_loop(loop)
@@ -879,10 +956,10 @@ class MainWindow(ManagedWindow):
 
     # Friendly RTC-style label → underlying DATA_COLUMNS column.
     _PLOT_AXIS_LABEL_TO_COLUMN = {
-        "Wavelength (nm)":      "Wavelength",
+        "Wavelength (nm)": "Wavelength",
         "Raman shift (cm⁻¹)": "Wavenumber",
-        "Energy (eV)":          "Energy",
-        "Raman shift (eV)":     "Raman Energy",
+        "Energy (eV)": "Energy",
+        "Raman shift (eV)": "Raman Energy",
     }
 
     def set_plot_x_axis(self, label: str) -> None:
@@ -916,9 +993,15 @@ class MainWindow(ManagedWindow):
         procedure.loop = self.loop
 
         for param_name in [
-            "excitation_wavelength", "center_wavelength", "exposure",
-            "slit_position", "gain", "speed",
-            "ccd_y_origin", "ccd_y_size", "ccd_x_bin",
+            "excitation_wavelength",
+            "center_wavelength",
+            "exposure",
+            "slit_position",
+            "gain",
+            "speed",
+            "ccd_y_origin",
+            "ccd_y_size",
+            "ccd_x_bin",
         ]:
             if hasattr(self.inputs, param_name):
                 value = getattr(self.inputs, param_name).value()
@@ -938,7 +1021,6 @@ class MainWindow(ManagedWindow):
 
         return procedure
 
-
     def queue(self, procedure=None, rotation_angle=None, thorlabs_angle=None):
         if procedure is None:
             procedure = self.make_procedure(
@@ -946,9 +1028,9 @@ class MainWindow(ManagedWindow):
                 thorlabs_angle=thorlabs_angle,
             )
 
-        scans_per_angle  = self.scans_per_angle_input.value()
-        base_rotation    = procedure.rotation_angle
-        base_thorlabs    = procedure.thorlabs_angle
+        scans_per_angle = self.scans_per_angle_input.value()
+        base_rotation = procedure.rotation_angle
+        base_thorlabs = procedure.thorlabs_angle
 
         for i in range(1, scans_per_angle + 1):
             current_procedure = self.make_procedure(
@@ -1008,23 +1090,26 @@ class MainWindow(ManagedWindow):
         self.update_current_angle()
         self.update_thorlabs_angle()
 
-    def unique_filename(self, directory, base_filename, rotation_angle,
-                        thorlabs_angle, scan_number):
+    def unique_filename(
+        self, directory, base_filename, rotation_angle, thorlabs_angle, scan_number
+    ):
         # Results() opens the file with a plain open(..., 'w'), which does not
         # create missing parent folders — so a freshly-typed nested directory
         # (e.g. .../bi2212-5152026/5292026) raises FileNotFoundError. Create
         # the target directory up front to keep the save path usable.
         if directory:
             os.makedirs(directory, exist_ok=True)
-        counter   = 1
-        opto_str  = f"opto{rotation_angle:.1f}"
-        tl_str    = f"thor{thorlabs_angle:.1f}"
-        filename  = f"{base_filename}_{opto_str}_{tl_str}_S{scan_number}_{counter}.csv"
+        counter = 1
+        opto_str = f"opto{rotation_angle:.1f}"
+        tl_str = f"thor{thorlabs_angle:.1f}"
+        filename = f"{base_filename}_{opto_str}_{tl_str}_S{scan_number}_{counter}.csv"
         file_path = os.path.join(directory, filename)
 
         while os.path.exists(file_path):
-            counter  += 1
-            filename  = f"{base_filename}_{opto_str}_{tl_str}_S{scan_number}_{counter}.csv"
+            counter += 1
+            filename = (
+                f"{base_filename}_{opto_str}_{tl_str}_S{scan_number}_{counter}.csv"
+            )
             file_path = os.path.join(directory, filename)
 
         logger.info(f"Generated filename: {file_path}")
@@ -1040,20 +1125,24 @@ class MainWindow(ManagedWindow):
         """
         spec = {
             # pymeasure inputs (QSpinBox / QDoubleSpinBox / QComboBox)
-            "excitation_wavelength": (self.inputs.excitation_wavelength, "value", "setValue"),
-            "center_wavelength":     (self.inputs.center_wavelength,     "value", "setValue"),
-            "exposure":              (self.inputs.exposure,              "value", "setValue"),
-            "slit_position":         (self.inputs.slit_position,         "value", "setValue"),
-            "gain":                  (self.inputs.gain,                  "value", "setValue"),
-            "speed":                 (self.inputs.speed,                 "value", "setValue"),
-            "ccd_y_origin":          (self.inputs.ccd_y_origin,          "value", "setValue"),
-            "ccd_y_size":            (self.inputs.ccd_y_size,            "value", "setValue"),
-            "ccd_x_bin":             (self.inputs.ccd_x_bin,             "value", "setValue"),
+            "excitation_wavelength": (
+                self.inputs.excitation_wavelength,
+                "value",
+                "setValue",
+            ),
+            "center_wavelength": (self.inputs.center_wavelength, "value", "setValue"),
+            "exposure": (self.inputs.exposure, "value", "setValue"),
+            "slit_position": (self.inputs.slit_position, "value", "setValue"),
+            "gain": (self.inputs.gain, "value", "setValue"),
+            "speed": (self.inputs.speed, "value", "setValue"),
+            "ccd_y_origin": (self.inputs.ccd_y_origin, "value", "setValue"),
+            "ccd_y_size": (self.inputs.ccd_y_size, "value", "setValue"),
+            "ccd_x_bin": (self.inputs.ccd_x_bin, "value", "setValue"),
             # GUI-only widgets
-            "grating":               (self.grating_combo,                "currentText", "setCurrentText"),
-            "scans_per_angle":       (self.scans_per_angle_input,        "value", "setValue"),
-            "set_angle_input":       (self.set_angle_input,              "value", "setValue"),
-            "thorlabs_angle_input":  (self.thorlabs_angle_input,         "value", "setValue"),
+            "grating": (self.grating_combo, "currentText", "setCurrentText"),
+            "scans_per_angle": (self.scans_per_angle_input, "value", "setValue"),
+            "set_angle_input": (self.set_angle_input, "value", "setValue"),
+            "thorlabs_angle_input": (self.thorlabs_angle_input, "value", "setValue"),
         }
         return spec
 
@@ -1108,6 +1197,7 @@ class MainWindow(ManagedWindow):
                 s.setValue(key, getattr(widget, getter)())
             except Exception as e:
                 logger.warning(f"failed to save {key!r}: {e}")
+
         # Pick the right change signal for the widget type.
         for sig_name in ("valueChanged", "currentTextChanged", "textChanged"):
             sig = getattr(widget, sig_name, None)
@@ -1120,7 +1210,7 @@ class MainWindow(ManagedWindow):
 
     def closeEvent(self, event):
         logger.info("Closing application...")
-        if hasattr(self, '_is_closing') and self._is_closing:
+        if hasattr(self, "_is_closing") and self._is_closing:
             event.accept()
             return
         self._is_closing = True
@@ -1167,6 +1257,7 @@ class MainWindow(ManagedWindow):
 
 if __name__ == "__main__":
     from logging_setup import setup_file_logging
+
     log_path = setup_file_logging("horibagui")
     logger.info(f"Logging to {log_path}")
     print(f"[horibagui] log file: {log_path}", flush=True)

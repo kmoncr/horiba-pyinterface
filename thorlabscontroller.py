@@ -206,8 +206,18 @@ class ThorlabsK10CR2Controller:
         except Exception:
             return False
 
-    def wait_until_ready(self, poll_interval: float = 0.1):
+    def wait_until_ready(self, poll_interval: float = 0.1, timeout: float = 65.0):
+        """Block until the stage stops moving (or timeout elapses).
+
+        MoveTo has its own 60 s timeout and can return before motion truly ends,
+        so callers poll this afterward. The timeout here (slightly longer than
+        MoveTo's) guards against a stuck IsInMotion flag hanging the caller.
+        """
+        deadline = time.monotonic() + timeout
         while self.is_busy:
+            if time.monotonic() > deadline:
+                logger.warning("K10CR2 wait_until_ready timed out; stage still busy")
+                return
             time.sleep(poll_interval)
 
     def _read_degree(self) -> float:
