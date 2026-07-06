@@ -1,17 +1,19 @@
 #!/usr/bin/env python
-"""Sweep a waveplate on the OptoSigma rotation stage and read transmitted power
-through a fixed polarizer with a Thorlabs PM100A.
+"""Sweep a waveplate on a rotation stage and read transmitted power through a
+fixed polarizer with a Thorlabs PM100A.
 
-Setup:  laser -> waveplate (on OptoSigma stage) -> fixed polarizer -> PM100A
+Setup:  laser -> waveplate (on rotation stage) -> fixed polarizer -> PM100A
 
-At each angle the stage is moved, allowed to settle, and the power meter is read
-(averaged over --navg samples). Power-vs-angle is plotted live. On completion the
-data is written to CSV and fit to both a half-wave-plate model (90 deg period) and
-a quarter-wave-plate model (180 deg period); the better fit and the fast-axis angle
-are printed.
+The rotation stage can be either the OptoSigma stage (default) or a Thorlabs
+K10CR2. At each angle the stage is moved, allowed to settle, and the power meter
+is read (averaged over --navg samples). Power-vs-angle is plotted live. On
+completion the data is written to CSV and fit to a single 90-deg-period
+cos(4*theta) model (the form a HWP or QWP both produce between fixed polarizers)
+to locate the fast axis.
 
 Example:
-    uv run python waveplate_scan.py
+    uv run python waveplate_scan.py                         # OptoSigma on COM3
+    uv run python waveplate_scan.py --stage thorlabs --serial 55000000 --home
     uv run python waveplate_scan.py --start 0 --stop 360 --step 5 --navg 10
 """
 
@@ -27,6 +29,7 @@ import pyvisa
 from ThorlabsPM100 import ThorlabsPM100
 
 from optosigmacontroller import OptoSigmaController
+from thorlabscontroller import ThorlabsK10CR2Controller
 
 
 # Thorlabs USB vendor id, present in the VISA resource string of a PM100x.
@@ -44,6 +47,36 @@ def find_pm100(rm: pyvisa.ResourceManager) -> str:
         f"No Thorlabs USB power meter found. VISA resources seen: {resources}. "
         f"Pass one explicitly with --visa."
     )
+
+
+def make_stage(args):
+    """Build and connect the rotation stage selected on the command line.
+
+    Both controllers expose the same interface the scan uses: connect(),
+    disconnect(), is_connected, and a blocking `degree` get/set property. So the
+    scan loop and fit are stage-agnostic -- only construction differs (OptoSigma
+    takes a COM port, K10CR2 a serial number), plus the K10CR2 generally needs a
+    Home before absolute moves are meaningful.
+    """
+    if args.stage == "thorlabs":
+        if not args.serial:
+            raise RuntimeError(
+                "--stage thorlabs requires --serial <K10CR2 serial number>"
+            )
+        print(f"connecting to Thorlabs K10CR2 {args.serial}")
+        stage = ThorlabsK10CR2Controller(serial_number=args.serial)
+        if not stage.connect():
+            raise RuntimeError(f"failed to connect to Thorlabs K10CR2 {args.serial}")
+        if args.home:
+            print("homing K10CR2 (establishing absolute zero)...")
+            stage.home()
+        return stage
+
+    print(f"connecting to OptoSigma stage on {args.port}")
+    stage = OptoSigmaController(port=args.port)
+    if not stage.connect():
+        raise RuntimeError(f"failed to connect to OptoSigma stage on {args.port}")
+    return stage
 
 
 def read_power(pm: ThorlabsPM100, navg: int) -> float:
@@ -157,7 +190,19 @@ def main():
         default=None,
         help="VISA resource string for the PM100A (auto-detect if omitted)",
     )
+    p.add_argument(
+        "--stage",
+        choices=["optosigma", "thorlabs"],
+        default="optosigma",
+        help="rotation stage type (default: optosigma)",
+    )
     p.add_argument("--port", default="COM3", help="OptoSigma stage serial port")
+    p.add_argument("--serial", default=None, help="Thorlabs K10CR2 serial number")
+    p.add_argument(
+        "--home",
+        action="store_true",
+        help="home the K10CR2 before scanning (ignored for OptoSigma)",
+    )
     p.add_argument("--start", type=float, default=0.0, help="start angle (deg)")
     p.add_argument(
         "--stop", type=float, default=180.0, help="stop angle, inclusive (deg)"
@@ -186,10 +231,7 @@ def main():
     pm = ThorlabsPM100(inst)
 
     # --- connect rotation stage ---
-    print(f"connecting to OptoSigma stage on {args.port}")
-    stage = OptoSigmaController(port=args.port)
-    if not stage.connect():
-        raise RuntimeError(f"failed to connect to OptoSigma stage on {args.port}")
+    stage = make_stage(args)
 
     angles = np.arange(args.start, args.stop + args.step / 2.0, args.step)
 
