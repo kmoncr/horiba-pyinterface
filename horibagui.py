@@ -331,9 +331,24 @@ class DualStageSequencer(QWidget):
         pair_row.addStretch()
         outer.addLayout(pair_row)
 
+        # Optional per-step name prefix. When set, each step's files are named
+        # "{prefix}_{stepN}_opto..._thor..._S..." instead of using the global
+        # file-input name, so different configurations get distinct names.
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name prefix:"))
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText(
+            "optional — e.g. sampleA  → sampleA_1_opto…, sampleA_2_opto…"
+        )
+        self._name_edit.textChanged.connect(self._refresh_preview)
+        name_row.addWidget(self._name_edit)
+        outer.addLayout(name_row)
+
         outer.addWidget(QLabel("Sequence preview  (each row = one set of scans):"))
-        self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Step", "OptoSigma (°)", "Thorlabs (°)"])
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(
+            ["Step", "OptoSigma (°)", "Thorlabs (°)", "Name"]
+        )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionMode(QAbstractItemView.NoSelection)
@@ -376,17 +391,23 @@ class DualStageSequencer(QWidget):
             opto_fixed = opto_angles[0] if opto_angles else 0.0
             return [(opto_fixed, t) for t in tl_angles]
 
+    def name_prefix(self) -> str:
+        return self._name_edit.text().strip()
+
     def _refresh_preview(self):
         steps = self._build_steps()
         scans = self._scans_spin.value()
+        prefix = self.name_prefix()
         self._table.setRowCount(len(steps))
         for row, (o, t) in enumerate(steps):
+            name = f"{prefix}_{row + 1}" if prefix else "(file name)"
             self._table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
             self._table.setItem(row, 1, QTableWidgetItem(f"{o:.3f}"))
             self._table.setItem(row, 2, QTableWidgetItem(f"{t:.3f}"))
+            self._table.setItem(row, 3, QTableWidgetItem(name))
             # Alternate row shading
             color = QColor("#f5f5f5") if row % 2 == 0 else QColor("#ffffff")
-            for col in range(3):
+            for col in range(4):
                 self._table.item(row, col).setBackground(color)
         total = len(steps) * scans
         self._step_count_label.setText(
@@ -1066,8 +1087,15 @@ class MainWindow(ManagedWindow):
     def _on_dual_sequence_run(self, steps: list):
 
         scans_per_step = self._dual_seq.scans_per_step()
+        # Optional per-step name prefix: step N is named "{prefix}_{N}", which
+        # replaces the base filename (angles are still appended). Empty prefix
+        # falls back to the global file-input name (original behaviour).
+        name_prefix = self._dual_seq.name_prefix()
 
-        for opto_angle, tl_angle in steps:
+        for step_idx, (opto_angle, tl_angle) in enumerate(steps, start=1):
+            base_name = (
+                f"{name_prefix}_{step_idx}" if name_prefix else self.file_input.filename
+            )
             for scan_i in range(1, scans_per_step + 1):
                 procedure = self.make_procedure(
                     rotation_angle=opto_angle,
@@ -1077,7 +1105,7 @@ class MainWindow(ManagedWindow):
 
                 filename = self.unique_filename(
                     self.file_input.directory,
-                    self.file_input.filename,
+                    base_name,
                     opto_angle,
                     tl_angle,
                     scan_i,
