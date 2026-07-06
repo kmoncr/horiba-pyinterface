@@ -29,7 +29,7 @@ import pyvisa
 from ThorlabsPM100 import ThorlabsPM100
 
 from optosigmacontroller import OptoSigmaController
-from thorlabscontroller import ThorlabsK10CR2Controller
+from thorlabscontroller import ThorlabsK10CR2Controller, list_k10cr2_serials
 
 
 # Thorlabs USB vendor id, present in the VISA resource string of a PM100x.
@@ -59,14 +59,26 @@ def make_stage(args):
     Home before absolute moves are meaningful.
     """
     if args.stage == "thorlabs":
-        if not args.serial:
-            raise RuntimeError(
-                "--stage thorlabs requires --serial <K10CR2 serial number>"
-            )
-        print(f"connecting to Thorlabs K10CR2 {args.serial}")
-        stage = ThorlabsK10CR2Controller(serial_number=args.serial)
+        serial = args.serial
+        if not serial:
+            # Auto-detect: use the sole connected K10CR2, else make the user pick.
+            found = list_k10cr2_serials()
+            if len(found) == 1:
+                serial = found[0]
+                print(f"auto-detected K10CR2 serial {serial}")
+            elif len(found) == 0:
+                raise RuntimeError(
+                    "no Thorlabs K10CR2 found. Check the USB connection, or pass "
+                    "--serial explicitly."
+                )
+            else:
+                raise RuntimeError(
+                    f"multiple K10CR2 stages found: {found}. Pass one with --serial."
+                )
+        print(f"connecting to Thorlabs K10CR2 {serial}")
+        stage = ThorlabsK10CR2Controller(serial_number=serial)
         if not stage.connect():
-            raise RuntimeError(f"failed to connect to Thorlabs K10CR2 {args.serial}")
+            raise RuntimeError(f"failed to connect to Thorlabs K10CR2 {serial}")
         if args.home:
             print("homing K10CR2 (establishing absolute zero)...")
             stage.home()
@@ -203,6 +215,11 @@ def main():
         action="store_true",
         help="home the K10CR2 before scanning (ignored for OptoSigma)",
     )
+    p.add_argument(
+        "--list-stages",
+        action="store_true",
+        help="list connected Thorlabs K10CR2 serial numbers and exit",
+    )
     p.add_argument("--start", type=float, default=0.0, help="start angle (deg)")
     p.add_argument(
         "--stop", type=float, default=180.0, help="stop angle, inclusive (deg)"
@@ -219,6 +236,16 @@ def main():
     )
     p.add_argument("--out", default=None, help="output CSV path")
     args = p.parse_args()
+
+    if args.list_stages:
+        serials = list_k10cr2_serials()
+        if serials:
+            print("connected Thorlabs K10CR2 stages:")
+            for s in serials:
+                print(f"  {s}")
+        else:
+            print("no Thorlabs K10CR2 stages found")
+        return
 
     out_path = args.out or f"waveplate_scan_{datetime.now():%Y%m%d_%H%M%S}.csv"
 

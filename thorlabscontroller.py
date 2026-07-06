@@ -6,6 +6,7 @@ from loguru import logger
 
 _kinesis_loaded = False
 
+
 def _load_kinesis(kinesis_path: str = r"C:\Program Files\Thorlabs\Kinesis") -> bool:
     global _kinesis_loaded
     if _kinesis_loaded:
@@ -37,6 +38,34 @@ def _load_kinesis(kinesis_path: str = r"C:\Program Files\Thorlabs\Kinesis") -> b
 
     _kinesis_loaded = True
     return True
+
+
+def list_k10cr2_serials(
+    kinesis_path: str = r"C:\Program Files\Thorlabs\Kinesis",
+) -> list[str]:
+    """Return the serial numbers of all connected Thorlabs K10CR2 stages.
+
+    K10CR2 serials use the device prefix 55. We ask Kinesis for the device list
+    filtered by CageRotator.DevicePrefix; if that overload isn't available we
+    fall back to the full device list filtered by the "55" prefix.
+    """
+    if not _load_kinesis(kinesis_path):
+        return []
+    try:
+        from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI
+        from Thorlabs.MotionControl.IntegratedStepperMotorsCLI import CageRotator
+
+        DeviceManagerCLI.BuildDeviceList()
+        try:
+            serials = DeviceManagerCLI.GetDeviceList(CageRotator.DevicePrefix)
+        except Exception:
+            serials = [
+                s for s in DeviceManagerCLI.GetDeviceList() if str(s).startswith("55")
+            ]
+        return [str(s) for s in serials]
+    except Exception as e:
+        logger.error(f"failed to list K10CR2 devices: {e}")
+        return []
 
 
 class ThorlabsK10CR2Controller:
@@ -136,6 +165,7 @@ class ThorlabsK10CR2Controller:
         target = float(target) % 360.0
         try:
             from System import Decimal as CDecimal
+
             self._device.MoveTo(CDecimal(target), 60000)
             self._last_degree = target
             logger.info(f"K10CR2 moved to {target:.3f}°")
