@@ -189,6 +189,26 @@ class PopupSequencerButton(QWidget):
         self._refresh_label(is_open=True)
 
 
+def parse_step_names(text: str) -> list[str]:
+    """Split the dual-sequence step-names field into a list of names."""
+    return [tok.strip() for tok in text.split(",") if tok.strip()]
+
+
+def step_base_name(names: list[str], step_idx: int, fallback: str) -> str:
+    """Base filename for dual-sequence step ``step_idx`` (1-based).
+
+    No names → the global file-input name. One name → prefix behaviour
+    (``name_1``, ``name_2``, …). Multiple names → cycle across steps, so
+    entries keep their own name through repeats (LR, RL, LR, RL, …);
+    filename collisions are handled downstream by unique_filename.
+    """
+    if not names:
+        return fallback
+    if len(names) == 1:
+        return f"{names[0]}_{step_idx}"
+    return names[(step_idx - 1) % len(names)]
+
+
 class StageSequenceEditor(QWidget):
     sequence_changed = pyqtSignal()
 
@@ -331,14 +351,14 @@ class DualStageSequencer(QWidget):
         pair_row.addStretch()
         outer.addLayout(pair_row)
 
-        # Optional per-step name prefix. When set, each step's files are named
-        # "{prefix}_{stepN}_opto..._thor..._S..." instead of using the global
-        # file-input name, so different configurations get distinct names.
+        # Optional step names. One name acts as a prefix ("{name}_{stepN}");
+        # several comma-separated names cycle across the steps, so each
+        # entry keeps its own name through repeats (LR, RL, LR, RL, …).
         name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Name prefix:"))
+        name_row.addWidget(QLabel("Step names:"))
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText(
-            "optional — e.g. sampleA  → sampleA_1_opto…, sampleA_2_opto…"
+            "optional — one name: sampleA_1, sampleA_2…  ·  several: LR, RL → LR, RL, LR, RL…"
         )
         self._name_edit.textChanged.connect(self._refresh_preview)
         name_row.addWidget(self._name_edit)
@@ -391,16 +411,16 @@ class DualStageSequencer(QWidget):
             opto_fixed = opto_angles[0] if opto_angles else 0.0
             return [(opto_fixed, t) for t in tl_angles]
 
-    def name_prefix(self) -> str:
-        return self._name_edit.text().strip()
+    def step_names(self) -> list[str]:
+        return parse_step_names(self._name_edit.text())
 
     def _refresh_preview(self):
         steps = self._build_steps()
         scans = self._scans_spin.value()
-        prefix = self.name_prefix()
+        names = self.step_names()
         self._table.setRowCount(len(steps))
         for row, (o, t) in enumerate(steps):
-            name = f"{prefix}_{row + 1}" if prefix else "(file name)"
+            name = step_base_name(names, row + 1, "(file name)")
             self._table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
             self._table.setItem(row, 1, QTableWidgetItem(f"{o:.3f}"))
             self._table.setItem(row, 2, QTableWidgetItem(f"{t:.3f}"))
@@ -1087,14 +1107,15 @@ class MainWindow(ManagedWindow):
     def _on_dual_sequence_run(self, steps: list):
 
         scans_per_step = self._dual_seq.scans_per_step()
-        # Optional per-step name prefix: step N is named "{prefix}_{N}", which
-        # replaces the base filename (angles are still appended). Empty prefix
-        # falls back to the global file-input name (original behaviour).
-        name_prefix = self._dual_seq.name_prefix()
+        # Optional step names replace the base filename (angles are still
+        # appended): one name → "{name}_{N}" per step; several names cycle
+        # across steps so repeated entries keep their own name; empty falls
+        # back to the global file-input name (original behaviour).
+        step_names = self._dual_seq.step_names()
 
         for step_idx, (opto_angle, tl_angle) in enumerate(steps, start=1):
-            base_name = (
-                f"{name_prefix}_{step_idx}" if name_prefix else self.file_input.filename
+            base_name = step_base_name(
+                step_names, step_idx, self.file_input.filename
             )
             for scan_i in range(1, scans_per_step + 1):
                 procedure = self.make_procedure(
