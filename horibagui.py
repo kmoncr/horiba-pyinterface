@@ -189,24 +189,23 @@ class PopupSequencerButton(QWidget):
         self._refresh_label(is_open=True)
 
 
-def parse_step_names(text: str) -> list[str]:
-    """Split the dual-sequence step-names field into a list of names."""
-    return [tok.strip() for tok in text.split(",") if tok.strip()]
+def build_dual_sequence_queue(
+    steps: list[tuple[float, float, str]], repeats: int, fallback: str
+) -> list[tuple[str, float, float, int]]:
+    """Queue plan for the dual-stage sequence.
 
-
-def step_base_name(names: list[str], step_idx: int, fallback: str) -> str:
-    """Base filename for dual-sequence step ``step_idx`` (1-based).
-
-    No names → the global file-input name. One name → prefix behaviour
-    (``name_1``, ``name_2``, …). Multiple names → cycle across steps, so
-    entries keep their own name through repeats (LR, RL, LR, RL, …);
-    filename collisions are handled downstream by unique_filename.
+    The WHOLE sequence runs once per repeat (repeat is the outer loop), so
+    each step keeps its own name on every pass: RL, LR, RL, LR, … — never
+    RL, RL, LR, LR. Returns ``(base_name, opto, tl, repeat_idx)`` tuples in
+    queue order; a blank step name falls back to the global file-input name
+    and the repeat index becomes the ``S#`` in filenames.
     """
-    if not names:
-        return fallback
-    if len(names) == 1:
-        return f"{names[0]}_{step_idx}"
-    return names[(step_idx - 1) % len(names)]
+    plan = []
+    for rep in range(1, repeats + 1):
+        for opto, tl, name in steps:
+            base = name.strip() if name and name.strip() else fallback
+            plan.append((base, opto, tl, rep))
+    return plan
 
 
 class StageSequenceEditor(QWidget):
@@ -309,10 +308,14 @@ class StageSequenceEditor(QWidget):
 
 
 class DualStageSequencer(QWidget):
-    run_requested = pyqtSignal(list)  # emits list of (opto_angle, tl_angle) tuples
+    # emits list of (opto_angle, tl_angle, name) triples
+    run_requested = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Per-step names typed into the preview table, kept by row index so
+        # they survive preview rebuilds when angles change.
+        self._names: list[str] = []
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(6)
@@ -345,33 +348,33 @@ class DualStageSequencer(QWidget):
         self._scans_spin = QSpinBox()
         self._scans_spin.setRange(1, 100)
         self._scans_spin.setValue(1)
+        self._scans_spin.setToolTip(
+            "Run the WHOLE sequence this many times (step 1, 2, …, then again)."
+        )
         self._scans_spin.valueChanged.connect(self._refresh_preview)
-        pair_row.addWidget(QLabel("  Scans/step:"))
+        pair_row.addWidget(QLabel("  Sequence repeats:"))
         pair_row.addWidget(self._scans_spin)
         pair_row.addStretch()
         outer.addLayout(pair_row)
 
-        # Optional step names. One name acts as a prefix ("{name}_{stepN}");
-        # several comma-separated names cycle across the steps, so each
-        # entry keeps its own name through repeats (LR, RL, LR, RL, …).
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Step names:"))
-        self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText(
-            "optional — one name: sampleA_1, sampleA_2…  ·  several: LR, RL → LR, RL, LR, RL…"
+        outer.addWidget(
+            QLabel(
+                "Sequence preview — double-click a Name cell to label that step "
+                "(blank = file name); names stick to their step on every repeat:"
+            )
         )
-        self._name_edit.textChanged.connect(self._refresh_preview)
-        name_row.addWidget(self._name_edit)
-        outer.addLayout(name_row)
-
-        outer.addWidget(QLabel("Sequence preview  (each row = one set of scans):"))
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(
             ["Step", "OptoSigma (°)", "Thorlabs (°)", "Name"]
         )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.itemChanged.connect(self._on_name_edited)
         self._table.setMaximumHeight(150)
         outer.addWidget(self._table)
 
@@ -411,27 +414,43 @@ class DualStageSequencer(QWidget):
             opto_fixed = opto_angles[0] if opto_angles else 0.0
             return [(opto_fixed, t) for t in tl_angles]
 
-    def step_names(self) -> list[str]:
-        return parse_step_names(self._name_edit.text())
+    def _on_name_edited(self, item: QTableWidgetItem):
+        if item.column() != 3:
+            return
+        row = item.row()
+        while len(self._names) <= row:
+            self._names.append("")
+        self._names[row] = item.text().strip()
+
+    def _named_steps(self) -> list[tuple[float, float, str]]:
+        return [
+            (o, t, self._names[i] if i < len(self._names) else "")
+            for i, (o, t) in enumerate(self._build_steps())
+        ]
 
     def _refresh_preview(self):
         steps = self._build_steps()
-        scans = self._scans_spin.value()
-        names = self.step_names()
+        repeats = self._scans_spin.value()
+        # Rebuilding rows fires itemChanged; block it so the stored names
+        # aren't clobbered mid-rebuild.
+        self._table.blockSignals(True)
         self._table.setRowCount(len(steps))
         for row, (o, t) in enumerate(steps):
-            name = step_base_name(names, row + 1, "(file name)")
-            self._table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-            self._table.setItem(row, 1, QTableWidgetItem(f"{o:.3f}"))
-            self._table.setItem(row, 2, QTableWidgetItem(f"{t:.3f}"))
+            for col, text in ((0, str(row + 1)), (1, f"{o:.3f}"), (2, f"{t:.3f}")):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self._table.setItem(row, col, item)
+            name = self._names[row] if row < len(self._names) else ""
             self._table.setItem(row, 3, QTableWidgetItem(name))
             # Alternate row shading
             color = QColor("#f5f5f5") if row % 2 == 0 else QColor("#ffffff")
             for col in range(4):
                 self._table.item(row, col).setBackground(color)
-        total = len(steps) * scans
+        self._table.blockSignals(False)
+        total = len(steps) * repeats
         self._step_count_label.setText(
-            f"{len(steps)} step{'s' if len(steps) != 1 else ''} · "
+            f"{len(steps)} step{'s' if len(steps) != 1 else ''} × "
+            f"{repeats} repeat{'s' if repeats != 1 else ''} = "
             f"{total} total scan{'s' if total != 1 else ''}"
         )
         self._run_btn.setEnabled(len(steps) > 0)
@@ -460,9 +479,9 @@ class DualStageSequencer(QWidget):
                 )
                 if resp != QMessageBox.Yes:
                     return
-        self.run_requested.emit(steps)
+        self.run_requested.emit(self._named_steps())
 
-    def scans_per_step(self) -> int:
+    def repeats(self) -> int:
         return self._scans_spin.value()
 
 
@@ -661,6 +680,19 @@ class MainWindow(ManagedWindow):
         except Exception as e:
             logger.warning(f"could not restore last save dir: {e}")
 
+        # Free-text note stamped into the header of every file queued after
+        # it is typed (regular scans and dual-sequence scans alike).
+        self._notes_row = QWidget()
+        notes_layout = QHBoxLayout(self._notes_row)
+        notes_layout.setContentsMargins(0, 0, 0, 0)
+        notes_layout.setSpacing(6)
+        notes_layout.addWidget(QLabel("Notes:"))
+        self.notes_input = QLineEdit()
+        self.notes_input.setPlaceholderText(
+            "optional — written into each saved file's header"
+        )
+        notes_layout.addWidget(self.notes_input)
+
         # Insert sequencer below the Queue/Abort buttons after pymeasure
         # has finished building the rest of the panel.
         self._dual_seq = DualStageSequencer()
@@ -726,10 +758,12 @@ class MainWindow(ManagedWindow):
         while parent is not None:
             layout = parent.layout()
             if layout is not None and isinstance(layout, QVBoxLayout):
+                layout.addWidget(self._notes_row)
                 layout.addWidget(self._dual_seq_section)
                 return
             parent = parent.parent()
         # Fallback: just add to inputs
+        self.inputs.layout().addWidget(self._notes_row)
         self.inputs.layout().addWidget(self._dual_seq_section)
 
     def trigger_temperature_update(self):
@@ -1054,6 +1088,7 @@ class MainWindow(ManagedWindow):
             procedure.rotation_angle = self.set_angle_input.value()
 
         procedure.grating = self.grating_combo.currentText()
+        procedure.notes = self.notes_input.text().strip()
 
         if thorlabs_angle is not None:
             procedure.thorlabs_angle = thorlabs_angle
@@ -1105,35 +1140,28 @@ class MainWindow(ManagedWindow):
         sleep(0.5)
 
     def _on_dual_sequence_run(self, steps: list):
-
-        scans_per_step = self._dual_seq.scans_per_step()
-        # Optional step names replace the base filename (angles are still
-        # appended): one name → "{name}_{N}" per step; several names cycle
-        # across steps so repeated entries keep their own name; empty falls
-        # back to the global file-input name (original behaviour).
-        step_names = self._dual_seq.step_names()
-
-        for step_idx, (opto_angle, tl_angle) in enumerate(steps, start=1):
-            base_name = step_base_name(
-                step_names, step_idx, self.file_input.filename
+        # steps: (opto, tl, name) triples. The whole sequence runs once per
+        # repeat, and the repeat index is the S# in filenames.
+        plan = build_dual_sequence_queue(
+            steps, self._dual_seq.repeats(), self.file_input.filename
+        )
+        for base_name, opto_angle, tl_angle, repeat_idx in plan:
+            procedure = self.make_procedure(
+                rotation_angle=opto_angle,
+                thorlabs_angle=tl_angle,
             )
-            for scan_i in range(1, scans_per_step + 1):
-                procedure = self.make_procedure(
-                    rotation_angle=opto_angle,
-                    thorlabs_angle=tl_angle,
-                )
-                procedure.scan_number = scan_i
+            procedure.scan_number = repeat_idx
 
-                filename = self.unique_filename(
-                    self.file_input.directory,
-                    base_name,
-                    opto_angle,
-                    tl_angle,
-                    scan_i,
-                )
-                procedure.data_filename = filename
-                experiment = self.new_experiment(Results(procedure, filename))
-                self.manager.queue(experiment)
+            filename = self.unique_filename(
+                self.file_input.directory,
+                base_name,
+                opto_angle,
+                tl_angle,
+                repeat_idx,
+            )
+            procedure.data_filename = filename
+            experiment = self.new_experiment(Results(procedure, filename))
+            self.manager.queue(experiment)
 
         # Refresh angle displays after queuing
         self.update_current_angle()

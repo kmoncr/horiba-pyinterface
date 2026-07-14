@@ -1,5 +1,5 @@
 from pymeasure.experiment import (
-    Procedure, FloatParameter, ListParameter, IntegerParameter
+    Procedure, Parameter, FloatParameter, ListParameter, IntegerParameter
 )
 from enum import Enum
 from horiba_sdk.devices.single_devices import Monochromator
@@ -60,6 +60,8 @@ class HoribaSpectrumProcedure(Procedure):
     ccd_y_origin = IntegerParameter("CCD Y Origin", units="px", default= 0, minimum=0)
     ccd_y_size = IntegerParameter("CCD Y Size", units="px", default= 256, minimum=0)
     ccd_x_bin = IntegerParameter("CCD X Bin", units="px", default= 1, minimum=1)
+    # Free-text note stamped into the saved file's #Parameters header block.
+    notes = Parameter("Notes", default="")
     
     # 1239.841984 nm·eV is the vacuum hc value used to convert
     # wavelength (nm) → photon energy (eV).
