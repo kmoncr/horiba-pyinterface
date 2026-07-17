@@ -18,6 +18,14 @@ Run with:  uv run python hwp_polarization.py
 
 from __future__ import annotations
 
+import csv
+import json
+import pathlib
+from datetime import datetime
+
+import numpy as np
+from loguru import logger
+
 
 # ── pure sequence math ──────────────────────────────────────────────
 
@@ -60,3 +68,69 @@ def format_angle_line(angles: list[float]) -> str:
     """Comma-separated 3-decimal line, pasteable into the dual sequencer's
     Manual angle box (which splits on commas and float()s each token)."""
     return ", ".join(f"{a:.3f}" for a in angles)
+
+
+# ── calibration records ─────────────────────────────────────────────
+
+RECORDS_FILE = pathlib.Path(__file__).parent / "hwp_calibration.json"
+ROLES = ("incoming", "outgoing")
+ROLE_STAGE = {"incoming": "optosigma", "outgoing": "thorlabs"}
+
+
+def load_records(path=None) -> dict:
+    """Stored calibration records by role. Empty dict on missing or
+    unreadable file — partial state (one role calibrated) is normal.
+
+    path=None resolves to RECORDS_FILE at call time, so tests can repoint
+    the module attribute without touching the real file."""
+    path = pathlib.Path(path if path is not None else RECORDS_FILE)
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text())
+        return {k: v for k, v in data.items() if k in ROLES and isinstance(v, dict)}
+    except Exception as e:
+        logger.warning(f"could not read {path}: {e}; starting with no records")
+        return {}
+
+
+def save_record(role: str, record: dict, path=None) -> None:
+    """Merge one role's record into the JSON file (atomic replace)."""
+    path = pathlib.Path(path if path is not None else RECORDS_FILE)
+    records = load_records(path)
+    records[role] = record
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(records, indent=2))
+    tmp.replace(path)
+
+
+def make_record(stage: str, fit: dict, csv_path: str) -> dict:
+    """Persistable record from a fit_waveplate result."""
+    amp4 = fit["amp4"]
+    return {
+        "stage": stage,
+        "peak_angle_deg": float(fit["peak_angle"]),
+        "r2": float(fit["r2"]),
+        "visibility": float(fit["visibility"]),
+        "amp2_over_amp4": (float(fit["amp2"] / amp4) if amp4 else None),
+        "csv_path": str(csv_path),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def parse_scan_csv(path) -> tuple[np.ndarray, np.ndarray]:
+    """Read an angle/power calibration scan CSV (the waveplate_scan.py /
+    calibrate-panel output format). Raises ValueError on the wrong shape."""
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    if not rows or [c.strip() for c in rows[0][:2]] != ["angle_deg", "power_W"]:
+        raise ValueError(
+            f"{path}: expected a CSV with header 'angle_deg,power_W' "
+            f"(the calibration-scan output format)"
+        )
+    ang, pw = [], []
+    for row in rows[1:]:
+        if len(row) >= 2 and row[0].strip():
+            ang.append(float(row[0]))
+            pw.append(float(row[1]))
+    return np.asarray(ang), np.asarray(pw)

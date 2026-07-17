@@ -58,3 +58,87 @@ def test_formatted_line_parses_like_sequencer_manual_box():
     line = format_angle_line([2.0, 17.0, 47.0])
     parsed = [float(tok) for tok in line.split(",") if tok.strip()]
     assert parsed == [2.0, 17.0, 47.0]
+
+
+import numpy as np
+import pytest
+
+from hwp_polarization import (
+    load_records,
+    make_record,
+    parse_scan_csv,
+    save_record,
+)
+
+
+# ── records persistence ──────────────────────────────────────────────
+
+def test_record_roundtrip_both_roles(tmp_path):
+    path = tmp_path / "hwp_calibration.json"
+    save_record("incoming", {"stage": "optosigma", "peak_angle_deg": 2.1}, path)
+    save_record("outgoing", {"stage": "thorlabs", "peak_angle_deg": 5.0}, path)
+    recs = load_records(path)
+    assert recs["incoming"]["peak_angle_deg"] == 2.1
+    assert recs["outgoing"]["stage"] == "thorlabs"
+
+def test_saving_one_role_preserves_the_other(tmp_path):
+    path = tmp_path / "hwp_calibration.json"
+    save_record("incoming", {"stage": "optosigma", "peak_angle_deg": 2.1}, path)
+    save_record("incoming", {"stage": "optosigma", "peak_angle_deg": 3.3}, path)
+    recs = load_records(path)
+    assert recs["incoming"]["peak_angle_deg"] == 3.3  # overwritten
+    save_record("outgoing", {"stage": "thorlabs", "peak_angle_deg": 5.0}, path)
+    assert load_records(path)["incoming"]["peak_angle_deg"] == 3.3  # preserved
+
+def test_missing_file_gives_empty_records(tmp_path):
+    assert load_records(tmp_path / "nope.json") == {}
+
+def test_corrupt_file_gives_empty_records(tmp_path):
+    path = tmp_path / "hwp_calibration.json"
+    path.write_text("{not valid json")
+    assert load_records(path) == {}
+
+def test_unknown_keys_are_dropped(tmp_path):
+    path = tmp_path / "hwp_calibration.json"
+    path.write_text('{"incoming": {"peak_angle_deg": 1.0}, "junk": {"x": 1}}')
+    recs = load_records(path)
+    assert set(recs) == {"incoming"}
+
+
+# ── make_record ──────────────────────────────────────────────────────
+
+FAKE_FIT = {
+    "peak_angle": 2.13, "r2": 0.9991, "visibility": 0.98,
+    "amp2": 0.012, "amp4": 1.0,
+}
+
+def test_make_record_fields():
+    rec = make_record("optosigma", FAKE_FIT, "hwp_calib_incoming_x.csv")
+    assert rec["stage"] == "optosigma"
+    assert rec["peak_angle_deg"] == pytest.approx(2.13)
+    assert rec["r2"] == pytest.approx(0.9991)
+    assert rec["visibility"] == pytest.approx(0.98)
+    assert rec["amp2_over_amp4"] == pytest.approx(0.012)
+    assert rec["csv_path"] == "hwp_calib_incoming_x.csv"
+    assert "T" in rec["timestamp"]  # ISO datetime
+
+def test_make_record_zero_amp4_yields_none_ratio():
+    fit = dict(FAKE_FIT, amp4=0.0)
+    assert make_record("optosigma", fit, "x.csv")["amp2_over_amp4"] is None
+
+
+# ── parse_scan_csv ───────────────────────────────────────────────────
+
+def test_parse_scan_csv_roundtrip(tmp_path):
+    path = tmp_path / "scan.csv"
+    path.write_text("angle_deg,power_W\n0.0,1.5e-3\n2.0,1.6e-3\n")
+    ang, pw = parse_scan_csv(path)
+    assert isinstance(ang, np.ndarray)
+    assert list(ang) == [0.0, 2.0]
+    assert pw[1] == pytest.approx(1.6e-3)
+
+def test_parse_scan_csv_rejects_wrong_header(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text("wavelength,counts\n500,10\n")
+    with pytest.raises(ValueError, match="angle_deg"):
+        parse_scan_csv(path)
