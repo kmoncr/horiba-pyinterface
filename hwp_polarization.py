@@ -103,6 +103,14 @@ def format_angle_line(angles: list[float]) -> str:
 RECORDS_FILE = pathlib.Path(__file__).parent / "hwp_calibration.json"
 ROLES = ("incoming", "outgoing")
 ROLE_STAGE = {"incoming": "optosigma", "outgoing": "thorlabs"}
+REQUIRED_RECORD_KEYS = {
+    "stage",
+    "peak_angle_deg",
+    "r2",
+    "visibility",
+    "timestamp",
+    "csv_path",
+}
 
 
 def load_records(path=None) -> dict:
@@ -116,7 +124,19 @@ def load_records(path=None) -> dict:
         if not path.exists():
             return {}
         data = json.loads(path.read_text())
-        return {k: v for k, v in data.items() if k in ROLES and isinstance(v, dict)}
+        records = {}
+        for k, v in data.items():
+            if k not in ROLES or not isinstance(v, dict):
+                continue
+            missing = REQUIRED_RECORD_KEYS - v.keys()
+            if missing:
+                logger.warning(
+                    f"{path}: dropping incomplete {k!r} record "
+                    f"(missing {sorted(missing)})"
+                )
+                continue
+            records[k] = v
+        return records
     except Exception as e:
         logger.warning(f"could not read {path}: {e}; starting with no records")
         return {}
@@ -302,6 +322,7 @@ class HwpPolarizationWindow(QWidget):
         self._scan_role = "incoming"
         self._scan_angles: list[float] = []
         self._scan_powers: list[float] = []
+        self._last_phis: list[float] = []
 
         outer = QVBoxLayout(self)
         outer.addWidget(self._build_calibrate_group())
@@ -422,6 +443,11 @@ class HwpPolarizationWindow(QWidget):
 
     def _on_run(self):
         self._scan_role = self._role()
+        if self._stop_spin.value() < self._start_spin.value():
+            QMessageBox.warning(
+                self, "Calibration", "Stop angle must be ≥ start angle."
+            )
+            return
         params = {
             "visa": self._visa_edit.text().strip() or None,
             "port": self._port_edit.text().strip(),
@@ -459,12 +485,16 @@ class HwpPolarizationWindow(QWidget):
 
     def _on_scan_failed(self, message: str):
         self._set_scanning(False)
-        self._worker = None
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         QMessageBox.critical(self, "Calibration", message)
 
     def _on_scan_done(self, angles: list, powers: list):
         self._set_scanning(False)
-        self._worker = None
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         role = self._scan_role
         if not angles:
             QMessageBox.warning(self, "Calibration", "No data collected.")
@@ -555,6 +585,11 @@ class HwpPolarizationWindow(QWidget):
         both = all(r in self._records for r in ROLES)
         self._seq_group.setEnabled(both)
         self._seq_hint.setVisible(not both)
+        # a record just changed underneath any previously generated lists —
+        # drop them so Save .txt can never pair a stale list with a new header
+        for edit in self._seq_edits.values():
+            edit.setText("")
+        self._last_phis = []
 
     def _on_load_csv(self, role: str):
         path, _ = QFileDialog.getOpenFileName(
@@ -673,6 +708,15 @@ class HwpPolarizationWindow(QWidget):
             f"Thorlabs:  {self._seq_edits['cross_tl'].text()}",
         ]
         pathlib.Path(path).write_text("\n".join(lines) + "\n")
+
+    def closeEvent(self, event):
+        """Never tear the process down while the scan thread is still
+        alive — that aborts mid-hardware-teardown, same failure mode as
+        dropping the worker reference too early in the done/failed handlers."""
+        if self._worker is not None:
+            self._worker.request_stop()
+            self._worker.wait()
+        event.accept()
 
 
 def main():

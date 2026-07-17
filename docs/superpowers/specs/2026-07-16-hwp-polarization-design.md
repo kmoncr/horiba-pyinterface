@@ -34,8 +34,9 @@ analyze it back onto the fixed analyzer:
 
 φ values come from start/stop/step inputs (default 0–180° in 15° steps).
 Output is **two separate runs** (per user decision): one all-co list, one
-all-cross list. Angles are emitted as-is (no mod-360 wrap needed: with
-φ ≤ 360 and z < 90 all values stay well inside the ±720° stage range).
+all-cross list. Angles are emitted as-is; both stages wrap absolute moves
+mod 360 in their controllers, which is harmless here since the HWP action
+has a 180° period.
 
 ## GUI layout (single window, three sections top to bottom)
 
