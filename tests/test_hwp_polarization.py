@@ -142,3 +142,48 @@ def test_parse_scan_csv_rejects_wrong_header(tmp_path):
     path.write_text("wavelength,counts\n500,10\n")
     with pytest.raises(ValueError, match="angle_deg"):
         parse_scan_csv(path)
+
+
+# ── scan loop + worker ──────────────────────────────────────────────
+
+from hwp_polarization import run_scan
+
+
+class FakeStage:
+    """Blocking degree get/set like the real controllers."""
+
+    def __init__(self):
+        self.moves: list[float] = []
+        self._deg = 0.0
+
+    @property
+    def degree(self) -> float:
+        return self._deg
+
+    @degree.setter
+    def degree(self, v: float):
+        self._deg = v
+        self.moves.append(v)
+
+
+def test_run_scan_visits_all_angles_and_reports_points():
+    stage = FakeStage()
+    readings = iter([1.0, 2.0, 3.0])
+    points = []
+    angles, powers = run_scan(
+        stage, lambda: next(readings), [0.0, 10.0, 20.0], 0.0,
+        lambda a, p: points.append((a, p)), lambda: False,
+    )
+    assert stage.moves == [0.0, 10.0, 20.0]
+    assert powers == [1.0, 2.0, 3.0]
+    assert points == list(zip(angles, powers))
+
+
+def test_run_scan_stop_aborts_but_keeps_partial_data():
+    stage = FakeStage()
+    angles, powers = run_scan(
+        stage, lambda: 1.0, [0.0, 10.0, 20.0, 30.0], 0.0,
+        lambda a, p: None, lambda: len(stage.moves) >= 2,
+    )
+    assert stage.moves == [0.0, 10.0]
+    assert len(angles) == len(powers) == 2

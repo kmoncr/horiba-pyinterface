@@ -21,10 +21,18 @@ from __future__ import annotations
 import csv
 import json
 import pathlib
+import time
 from datetime import datetime
 
 import numpy as np
+import pyvisa
+from PyQt5.QtCore import QThread, pyqtSignal
+from ThorlabsPM100 import ThorlabsPM100
 from loguru import logger
+
+from optosigmacontroller import OptoSigmaController
+from thorlabscontroller import ThorlabsK10CR2Controller, list_k10cr2_serials
+from waveplate_scan import find_pm100, fit_waveplate, read_power
 
 
 # ── pure sequence math ──────────────────────────────────────────────
@@ -134,3 +142,119 @@ def parse_scan_csv(path) -> tuple[np.ndarray, np.ndarray]:
             ang.append(float(row[0]))
             pw.append(float(row[1]))
     return np.asarray(ang), np.asarray(pw)
+
+
+# ── scan loop + worker ──────────────────────────────────────────────
+
+
+def run_scan(stage, read_fn, targets, settle, on_point, should_stop):
+    """Move-settle-read loop with injected hardware, so it is testable
+    without devices. Returns (measured_angles, powers); stops early (keeping
+    partial data) when should_stop() turns true."""
+    measured, powers = [], []
+    for target in targets:
+        if should_stop():
+            break
+        stage.degree = float(target)
+        if settle > 0:
+            time.sleep(settle)
+        power = read_fn()
+        actual = stage.degree
+        measured.append(actual)
+        powers.append(power)
+        on_point(actual, power)
+    return measured, powers
+
+
+class ScanWorker(QThread):
+    """Owns the stage + power meter for exactly one calibration scan.
+
+    Connects on start and always disconnects on the way out, so no hardware
+    is held between scans — the GUI enforces one scan (one waveplate) at a
+    time by keeping at most one worker alive.
+    """
+
+    point = pyqtSignal(float, float)
+    finished_ok = pyqtSignal(list, list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, role: str, params: dict, parent=None):
+        super().__init__(parent)
+        self._role = role
+        self._params = params
+        self._stop = False
+
+    def request_stop(self):
+        self._stop = True
+
+    def _connect_stage(self):
+        if self._role == "incoming":
+            port = self._params["port"]
+            stage = OptoSigmaController(port=port)
+            if not stage.connect():
+                raise RuntimeError(
+                    f"failed to connect to OptoSigma on {port} — serial ports "
+                    f"can't be shared; if the main GUI holds this stage, "
+                    f"disconnect it there first"
+                )
+            return stage
+        serial = self._params["serial"]
+        if not serial:
+            found = list_k10cr2_serials()
+            if len(found) == 1:
+                serial = found[0]
+            elif not found:
+                raise RuntimeError(
+                    "no Thorlabs K10CR2 found — check the USB connection, or "
+                    "enter a serial number"
+                )
+            else:
+                raise RuntimeError(
+                    f"multiple K10CR2 stages found: {found} — enter one explicitly"
+                )
+        stage = ThorlabsK10CR2Controller(serial_number=serial)
+        if not stage.connect():
+            raise RuntimeError(
+                f"failed to connect to Thorlabs K10CR2 {serial} — if the main "
+                f"GUI holds this stage, disconnect it there first"
+            )
+        if self._params["home"]:
+            stage.home()
+        return stage
+
+    def run(self):
+        stage = None
+        inst = None
+        try:
+            rm = pyvisa.ResourceManager()
+            resource = self._params["visa"] or find_pm100(rm)
+            inst = rm.open_resource(resource)
+            inst.timeout = 5000
+            pm = ThorlabsPM100(inst)
+
+            stage = self._connect_stage()
+
+            p = self._params
+            targets = np.arange(p["start"], p["stop"] + p["step"] / 2.0, p["step"])
+            measured, powers = run_scan(
+                stage,
+                lambda: read_power(pm, p["navg"]),
+                targets,
+                p["settle"],
+                lambda a, pw: self.point.emit(a, pw),
+                lambda: self._stop,
+            )
+            self.finished_ok.emit(list(measured), list(powers))
+        except Exception as e:  # every hardware error surfaces as a GUI dialog
+            self.failed.emit(str(e))
+        finally:
+            if stage is not None:
+                try:
+                    stage.disconnect()
+                except Exception:
+                    pass
+            if inst is not None:
+                try:
+                    inst.close()
+                except Exception:
+                    pass
